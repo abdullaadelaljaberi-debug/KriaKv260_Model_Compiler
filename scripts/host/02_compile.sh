@@ -11,7 +11,7 @@
 # Usage:
 #   bash scripts/host/02_compile.sh <family> <variant> <weights.pt> <calib_dir> [output_path]
 # ─────────────────────────────────────────────────────────────────────────────
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh

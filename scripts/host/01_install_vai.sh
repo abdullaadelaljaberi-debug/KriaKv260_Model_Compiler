@@ -10,7 +10,7 @@
 # AMD does NOT publicly distribute the VAI 3.5 GPU image on Docker Hub.
 # Either pull the CPU image (latest tag), or build from source.
 # ─────────────────────────────────────────────────────────────────────────────
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
