@@ -16,9 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 
 # Min requirements (matches docs/HOST_SETUP.md)
-MIN_DISK_GB=50            # for VAI image + intermediate quantization data
-MIN_DOCKER_VERSION=20.10
-VAI_IMAGE="xilinx/vitis-ai-pytorch-gpu:3.5.0.001"
+MIN_DISK_GB=50
 
 FAIL=0
 fail() { FAIL=$((FAIL + 1)); }
@@ -32,9 +30,10 @@ if [[ -r /etc/os-release ]]; then
     source /etc/os-release
     if [[ "$ID" == "ubuntu" ]] && [[ "${VERSION_ID%%.*}" -ge 22 ]]; then
         log_ok "Ubuntu ${VERSION_ID} (${VERSION_CODENAME})"
+    elif [[ "$ID" == "ubuntu" ]] && [[ "${VERSION_ID%%.*}" -ge 20 ]]; then
+        log_warn "Ubuntu ${VERSION_ID} — works, but 22.04+ is the tested baseline"
     else
-        log_warn "Detected: $PRETTY_NAME"
-        log_warn "  Pipeline tested on Ubuntu 22.04 / 24.04 LTS. Other distros may work but are unsupported."
+        log_warn "Detected: $PRETTY_NAME (untested distro; may work)"
     fi
 else
     log_warn "Cannot determine distro (no /etc/os-release)"
@@ -84,67 +83,80 @@ else
     fail
 fi
 
-# ─── 5. NVIDIA driver ───────────────────────────────────────────────────────
-log_info "NVIDIA driver"
+# ─── 5. NVIDIA driver (optional — only needed for GPU image) ────────────────
+log_info "NVIDIA driver (optional)"
 if nvidia_driver_ok; then
     drv=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
     gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
     log_ok "driver $drv on $gpu"
-    # Vitis-AI 3.5 ships CUDA 11.8 in the image; needs driver ≥520
     drv_major=$(echo "$drv" | cut -d. -f1)
     if (( drv_major < 520 )); then
-        log_warn "Driver < 520; Vitis-AI 3.5 PyTorch GPU image needs CUDA 11.8 → driver ≥520"
-        log_warn "  Update via:  sudo apt install nvidia-driver-535"
+        log_warn "Driver < 520; for GPU compile, VAI 3.5 needs CUDA 11.8 → driver ≥520"
     fi
+    HAS_NVIDIA=1
 else
-    log_err "nvidia-smi not present or driver not loaded"
-    log_err "  Fix:  sudo apt install nvidia-driver-535  (then reboot)"
-    log_err "  Or use Ubuntu's 'Software & Updates' → 'Additional Drivers' tab"
-    fail
+    log_warn "nvidia-smi not present or driver not loaded"
+    log_warn "  CPU compile still works (just slower). For GPU acceleration:"
+    log_warn "    sudo apt install nvidia-driver-535  (then reboot)"
+    HAS_NVIDIA=0
 fi
 
-# ─── 6. NVIDIA Container Toolkit ────────────────────────────────────────────
-log_info "NVIDIA Container Toolkit"
-if nvidia_docker_ok; then
-    log_ok "GPU is accessible from docker containers"
-else
-    if have_cmd docker && nvidia_driver_ok; then
-        log_err "Docker can't see the GPU (Container Toolkit not installed/configured)"
-        log_err "  Fix:"
-        log_err "    distribution=\$(. /etc/os-release; echo \$ID\$VERSION_ID)"
-        log_err "    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \\"
-        log_err "      sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
-        log_err "    curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \\"
-        log_err "      sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \\"
-        log_err "      sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list"
-        log_err "    sudo apt update && sudo apt install -y nvidia-container-toolkit"
-        log_err "    sudo nvidia-ctk runtime configure --runtime=docker"
-        log_err "    sudo systemctl restart docker"
-        fail
+# ─── 6. NVIDIA Container Toolkit (only checked if NVIDIA driver present) ────
+log_info "NVIDIA Container Toolkit (optional)"
+if (( HAS_NVIDIA == 1 )); then
+    if nvidia_docker_ok; then
+        log_ok "GPU is accessible from docker containers"
     else
-        log_warn "Skipped (docker or NVIDIA driver missing — fix those first)"
+        log_warn "Driver is installed but Container Toolkit isn't wired up to docker"
+        log_warn "  Required only if using the GPU Vitis-AI image. CPU image works without it."
+        log_warn "  Fix:"
+        log_warn "    distribution=\$(. /etc/os-release; echo \$ID\$VERSION_ID)"
+        log_warn "    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \\"
+        log_warn "      sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
+        log_warn "    curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \\"
+        log_warn "      sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \\"
+        log_warn "      sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list"
+        log_warn "    sudo apt update && sudo apt install -y nvidia-container-toolkit"
+        log_warn "    sudo nvidia-ctk runtime configure --runtime=docker"
+        log_warn "    sudo systemctl restart docker"
     fi
+else
+    log_warn "Skipped (no NVIDIA driver)"
 fi
 
-# ─── 7. Internet (for pulling VAI image) ────────────────────────────────────
+# ─── 7. Internet (informational) ────────────────────────────────────────────
 log_info "Internet connectivity"
 if internet_ok; then
     log_ok "outbound HTTPS works"
 else
-    log_err "Cannot reach the public internet"
-    log_err "  The VAI 3.5 docker image is ~10 GB and must be pulled from Docker Hub"
-    log_err "  Check your network / proxy configuration before continuing"
-    fail
+    log_warn "Cannot reach the public internet"
+    log_warn "  Only matters if you need to pull/build the VAI image. If you"
+    log_warn "  already have it locally (next check), this isn't a problem."
 fi
 
-# ─── 8. Vitis-AI image already pulled? (informational, not a failure) ──────
+# ─── 8. Vitis-AI image — auto-detect any local CPU or GPU image ────────────
 log_info "Vitis-AI 3.5 image"
-if docker_ok && docker image inspect "$VAI_IMAGE" &>/dev/null; then
-    sz=$(docker image inspect --format='{{.Size}}' "$VAI_IMAGE" | numfmt --to=iec)
-    log_ok "$VAI_IMAGE  ($sz)"
+# Patterns match xilinx/vitis-ai-pytorch-{gpu,cpu}:* (any tag)
+gpu_imgs=$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
+            | grep -E '^xilinx/vitis-ai-pytorch-gpu:' || true)
+cpu_imgs=$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
+            | grep -E '^xilinx/vitis-ai-pytorch-cpu:' || true)
+
+if [[ -n "$gpu_imgs" ]]; then
+    while IFS= read -r img; do
+        [[ -z "$img" ]] && continue
+        sz=$(docker image inspect --format='{{.Size}}' "$img" 2>/dev/null | numfmt --to=iec)
+        log_ok "$img  ($sz)  [GPU]"
+    done <<< "$gpu_imgs"
+elif [[ -n "$cpu_imgs" ]]; then
+    while IFS= read -r img; do
+        [[ -z "$img" ]] && continue
+        sz=$(docker image inspect --format='{{.Size}}' "$img" 2>/dev/null | numfmt --to=iec)
+        log_ok "$img  ($sz)  [CPU — slower compile, but works]"
+    done <<< "$cpu_imgs"
 else
-    log_warn "$VAI_IMAGE not yet pulled"
-    log_warn "  Run  bash scripts/host/01_install_vai.sh  to pull it (~10 GB download)"
+    log_warn "No Vitis-AI PyTorch image found locally"
+    log_warn "  Run  bash scripts/host/01_install_vai.sh  for setup options"
 fi
 
 # ─── 9. Python ───────────────────────────────────────────────────────────────
@@ -171,7 +183,14 @@ done
 # ─── summary ────────────────────────────────────────────────────────────────
 echo
 if (( FAIL == 0 )); then
-    log_ok "All checks passed. Next:  bash scripts/host/01_install_vai.sh"
+    if [[ -n "$gpu_imgs" || -n "$cpu_imgs" ]]; then
+        log_ok "All checks passed. You can compile now:"
+        log_info "  bash scripts/host/02_compile.sh yolov5 yolov5n \\"
+        log_info "       data/weights/yolov5n_lpr.pt data/calib/"
+    else
+        log_ok "All required checks passed. Next:"
+        log_info "  bash scripts/host/01_install_vai.sh  (to set up the VAI image)"
+    fi
     exit 0
 else
     log_err "$FAIL check(s) failed. Address the items above before continuing."

@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # scripts/host/01_install_vai.sh
 # ─────────────────────────────────────────────────────────────────────────────
-# Pulls the Vitis-AI 3.5 PyTorch GPU docker image. Idempotent — if the image
-# is already present, exits successfully without re-pulling.
+# Set up the Vitis-AI 3.5 docker image. Three paths:
+#
+#   1. If a local image is already present (CPU or GPU), report and exit OK.
+#   2. If $VAI_IMAGE env var is set, use exactly that.
+#   3. If neither, print build-from-source instructions and exit non-zero.
+#
+# AMD does NOT publicly distribute the VAI 3.5 GPU image on Docker Hub.
+# Either pull the CPU image (latest tag), or build from source.
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -10,62 +16,80 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 
-# Docker tag pinned in one place. Update here if AMD releases a newer 3.5.x.
-VAI_IMAGE="${VAI_IMAGE:-xilinx/vitis-ai-pytorch-gpu:3.5.0.001}"
-
-log_step "Vitis-AI 3.5 docker image: $VAI_IMAGE"
+log_step "Vitis-AI 3.5 image setup"
 
 # ─── prereq: docker reachable ───────────────────────────────────────────────
 if ! docker_ok; then
-    die "docker daemon not reachable. Run scripts/host/00_check_prereqs.sh and follow its hints."
+    die "docker daemon not reachable. Run scripts/host/00_check_prereqs.sh."
 fi
 
-# ─── already pulled? ────────────────────────────────────────────────────────
-if docker image inspect "$VAI_IMAGE" &>/dev/null; then
-    sz=$(docker image inspect --format='{{.Size}}' "$VAI_IMAGE" | numfmt --to=iec)
-    log_ok "Image already present ($sz). Nothing to do."
-    log_info "To force re-pull:  docker pull $VAI_IMAGE"
+# ─── auto-detect existing image ─────────────────────────────────────────────
+# Prefer GPU > CPU; prefer pinned tag > latest. We don't enforce a specific
+# version because (a) AMD's tag scheme has changed, (b) "latest" is fine for
+# our purposes, (c) the inner conda env path is what actually matters.
+detect_local_image() {
+    # GPU first
+    docker images --format '{{.Repository}}:{{.Tag}}' \
+        | grep -E '^xilinx/vitis-ai-pytorch-gpu:' \
+        | head -1
+}
+
+detect_local_cpu_image() {
+    docker images --format '{{.Repository}}:{{.Tag}}' \
+        | grep -E '^xilinx/vitis-ai-pytorch-cpu:' \
+        | head -1
+}
+
+# Honor explicit override
+if [[ -n "${VAI_IMAGE:-}" ]]; then
+    if docker image inspect "$VAI_IMAGE" &>/dev/null; then
+        sz=$(docker image inspect --format='{{.Size}}' "$VAI_IMAGE" | numfmt --to=iec)
+        log_ok "Using \$VAI_IMAGE override: $VAI_IMAGE ($sz)"
+        exit 0
+    else
+        die "\$VAI_IMAGE='$VAI_IMAGE' is not a local image. Pull or build it first."
+    fi
+fi
+
+# Auto-detect
+gpu_img=$(detect_local_image)
+cpu_img=$(detect_local_cpu_image)
+
+if [[ -n "$gpu_img" ]]; then
+    sz=$(docker image inspect --format='{{.Size}}' "$gpu_img" | numfmt --to=iec)
+    log_ok "Found local GPU image: $gpu_img ($sz)"
+    log_info "The compile script will use this image with --gpus all"
+    log_info "Override with:  export VAI_IMAGE='$gpu_img'  (already auto-detected)"
     exit 0
 fi
 
-# ─── disk space sanity ──────────────────────────────────────────────────────
-# The compressed download is ~10 GB but unpacks to ~25 GB on disk.
-docker_root=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo "/var/lib/docker")
-if ! disk_free_gb "$docker_root" 30; then
-    avail_gb=$(df -BG --output=avail "$docker_root" 2>/dev/null | tail -1 | tr -dc '0-9' || echo "?")
-    log_err "Only ${avail_gb} GB free at $docker_root (need ≥30 GB for unpacked image)"
-    log_err "  Free up docker space:  docker system prune -a"
-    log_err "  Or relocate the docker root via /etc/docker/daemon.json"
-    exit 1
+if [[ -n "$cpu_img" ]]; then
+    sz=$(docker image inspect --format='{{.Size}}' "$cpu_img" | numfmt --to=iec)
+    log_ok "Found local CPU image: $cpu_img ($sz)"
+    log_warn "  CPU image — quantization will run ~5× slower than GPU"
+    log_warn "  yolov5n calib (200 imgs): ~10-15 min on CPU vs ~2-5 min on GPU"
+    log_info "  For most thesis work this is fine. To speed up later, see:"
+    log_info "    bottom of this script (build GPU from source)"
+    exit 0
 fi
 
-# ─── pull ───────────────────────────────────────────────────────────────────
-log_info "Pulling — this is a ~10 GB compressed download. Be patient."
-if docker pull "$VAI_IMAGE"; then
-    log_ok "Pulled $VAI_IMAGE"
-else
-    log_err "docker pull failed."
-    log_err "  Common causes:"
-    log_err "    - Authentication: docker hub may require login for some images"
-    log_err "    - Network: try again on a stable connection"
-    log_err "    - Disk space: docker may have run out mid-extract"
-    exit 1
-fi
-
-# ─── post-install GPU sanity ────────────────────────────────────────────────
-log_info "Verifying GPU is reachable from inside the image..."
-if docker run --rm --gpus all "$VAI_IMAGE" \
-        bash -c 'nvidia-smi --query-gpu=name --format=csv,noheader | head -1' \
-        2>/dev/null | grep -q '.'; then
-    log_ok "GPU visible from container"
-else
-    log_warn "Could not run nvidia-smi inside the container."
-    log_warn "  This may be fine for some setups, but the compile step requires GPU access."
-    log_warn "  Re-run scripts/host/00_check_prereqs.sh and verify the NVIDIA Container Toolkit step."
-fi
-
+# ─── neither found: instructions to obtain ─────────────────────────────────
+log_warn "No Vitis-AI PyTorch image present locally."
 echo
-log_ok "Vitis-AI 3.5 ready."
-log_info "Next:  drop your trained .pt weights into data/weights/ and calibration"
-log_info "       images into data/calib/, then:"
-log_info "         bash scripts/host/02_compile.sh yolov5 yolov5n data/weights/<name>.pt data/calib/"
+log_info "Vitis-AI 3.5 GPU images are NOT distributed on Docker Hub."
+log_info "You have two options:"
+echo
+log_info "  ───── Option A: pull the CPU image (~12 GB, ready in 20-40 min) ─────"
+log_info "  docker pull xilinx/vitis-ai-pytorch-cpu:latest"
+log_info "  # Slower quantization (~10-15 min/model on CPU vs ~2-5 min on GPU)"
+echo
+log_info "  ───── Option B: build the GPU image from source (~25 GB, 30-60 min build) ─────"
+log_info "  cd /tmp"
+log_info "  git clone https://github.com/Xilinx/Vitis-AI.git -b v3.5"
+log_info "  cd Vitis-AI/docker"
+log_info "  ./docker_build.sh -t gpu -f pytorch"
+log_info "  # Builds image as xilinx/vitis-ai-pytorch-gpu:<commit-hash>"
+echo
+log_info "After either option:"
+log_info "  bash scripts/host/01_install_vai.sh    # re-run, should now detect the image"
+exit 1

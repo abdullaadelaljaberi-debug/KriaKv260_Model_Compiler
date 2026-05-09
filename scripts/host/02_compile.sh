@@ -5,14 +5,11 @@
 # Vitis-AI 3.5 Docker container, with the user's weights and calibration
 # images mounted in.
 #
+# Auto-detects whether to use a GPU or CPU image, picking the GPU image
+# preferentially. Override via $VAI_IMAGE env var.
+#
 # Usage:
 #   bash scripts/host/02_compile.sh <family> <variant> <weights.pt> <calib_dir> [output_path]
-#
-# Example:
-#   bash scripts/host/02_compile.sh yolov5 yolov5n \
-#        data/weights/yolov5n_lpr.pt \
-#        data/calib/ \
-#        out/yolov5n_kv260.xmodel
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -20,7 +17,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 
-VAI_IMAGE="${VAI_IMAGE:-xilinx/vitis-ai-pytorch-gpu:3.5.0.001}"
 N_CALIB="${N_CALIB:-200}"
 NUM_CLASSES="${NUM_CLASSES:-1}"
 
@@ -39,7 +35,7 @@ Arguments:
                Default: out/<variant>/<variant>_kv260.xmodel
 
 Environment overrides:
-  VAI_IMAGE    Override the docker image tag (default: $VAI_IMAGE)
+  VAI_IMAGE    Docker image tag. Default: auto-detect (GPU preferred over CPU)
   N_CALIB      Number of calibration images to use (default: $N_CALIB)
   NUM_CLASSES  Number of object classes the model was trained on (default: 1)
 
@@ -62,7 +58,6 @@ OUT_REL="${5:-out/$VARIANT/${VARIANT}_kv260.xmodel}"
 
 # ─── resolve paths to absolute, relative to repo root ──────────────────────
 abspath_in_repo() {
-    # Resolve a path that should be inside the repo. Errors if outside.
     local p="$1"
     p="$(realpath -m --relative-base="$REPO_ROOT" "$REPO_ROOT/$p")"
     if [[ "$p" == /* ]] || [[ "$p" == ../* ]]; then
@@ -86,10 +81,36 @@ if ! docker_ok; then
     die "docker daemon not reachable. Run scripts/host/00_check_prereqs.sh."
 fi
 
-if ! docker image inspect "$VAI_IMAGE" &>/dev/null; then
-    log_err "Vitis-AI 3.5 image not pulled: $VAI_IMAGE"
-    log_err "  Run:  bash scripts/host/01_install_vai.sh"
-    exit 1
+# ─── pick the docker image ─────────────────────────────────────────────────
+# Auto-detect unless caller set $VAI_IMAGE explicitly.
+USE_GPU=0
+if [[ -n "${VAI_IMAGE:-}" ]]; then
+    if ! docker image inspect "$VAI_IMAGE" &>/dev/null; then
+        die "\$VAI_IMAGE='$VAI_IMAGE' not present locally. Pull or build it first."
+    fi
+    [[ "$VAI_IMAGE" == *"-gpu:"* ]] && USE_GPU=1
+else
+    # Prefer GPU
+    img=$(docker images --format '{{.Repository}}:{{.Tag}}' \
+            | grep -E '^xilinx/vitis-ai-pytorch-gpu:' | head -1 || true)
+    if [[ -n "$img" ]]; then
+        VAI_IMAGE="$img"
+        USE_GPU=1
+    else
+        img=$(docker images --format '{{.Repository}}:{{.Tag}}' \
+                | grep -E '^xilinx/vitis-ai-pytorch-cpu:' | head -1 || true)
+        if [[ -n "$img" ]]; then
+            VAI_IMAGE="$img"
+        else
+            die "No Vitis-AI image found. Run scripts/host/01_install_vai.sh."
+        fi
+    fi
+fi
+
+if (( USE_GPU == 1 )); then
+    log_info "image   : $VAI_IMAGE  [GPU acceleration]"
+else
+    log_info "image   : $VAI_IMAGE  [CPU — quantization will be slower]"
 fi
 
 [[ -f "$WEIGHTS" ]] || die "weights file not found: $WEIGHTS_REL
@@ -109,19 +130,20 @@ log_info "work dir: $WORK_DIR"
 # ─── launch the container ───────────────────────────────────────────────────
 log_step "Launching Vitis-AI 3.5 container"
 
-# Files to mount: the whole repo (read-write), so the package + data + build
-# directory are visible. ~/.cache and /tmp shared so torch hub etc. work.
 docker_args=(
     --rm
-    --gpus all
     --user "$(id -u):$(id -g)"
     --workdir /workspace
     -v "$REPO_ROOT:/workspace:rw"
     -v "$HOME/.cache:/home/$(whoami)/.cache:rw"
     -e PYTHONPATH=/workspace
     -e PYTHONDONTWRITEBYTECODE=1
-    -e VAI_FORCE_CPU=0
 )
+
+# Only add --gpus all if using a GPU image (otherwise causes errors on CPU image)
+if (( USE_GPU == 1 )); then
+    docker_args+=( --gpus all )
+fi
 
 # Only attach a TTY if running interactively (lets you Ctrl-C cleanly)
 if [[ -t 0 ]]; then
@@ -173,7 +195,7 @@ except Exception as e:
 EOF
 )
 
-# Conda env activation: VAI 3.5 image's pytorch env is named 'vitis-ai-pytorch'
+# Run with conda env activated
 docker run "${docker_args[@]}" "$VAI_IMAGE" bash -lc "
     set -e
     source /opt/vitis_ai/conda/etc/profile.d/conda.sh
