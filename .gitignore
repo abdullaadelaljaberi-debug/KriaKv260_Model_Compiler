@@ -1,0 +1,91 @@
+# ─────────────────────────────────────────────────────────────
+# Python
+# ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+develop-eggs/
+.installed.cfg
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+.env
+.venv
+venv/
+env/
+ENV/
+
+# ─────────────────────────────────────────────────────────────
+# Jupyter
+# ─────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ─────────────────────────────────────────────────────────────
+# Editors / IDEs
+# ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ─────────────────────────────────────────────────────────────
+# Project data — DO NOT commit large binaries
+# ─────────────────────────────────────────────────────────────
+# Weights: distributed via download_weights.sh, not git
+data/weights/*
+!data/weights/.gitkeep
+
+# Calibration images: user-provided, not committed
+data/calib/*
+!data/calib/.gitkeep
+
+# Eval images: user-provided, not committed
+data/eval/*
+!data/eval/.gitkeep
+
+# Compiled artifacts (xmodels, intermediate quantization, etc.)
+out/
+build/
+*.xmodel
+*.h5
+*.onnx
+*.pth
+*.pt
+!data/weights/.gitkeep
+
+# DPU bitstream files (downloaded by Kria setup script, not committed)
+*.bit
+*.hwh
+*.xclbin
+
+# ─────────────────────────────────────────────────────────────
+# Logs
+# ─────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ─────────────────────────────────────────────────────────────
+# OS / package manager
+# ─────────────────────────────────────────────────────────────
+*.tar
+*.tar.gz
+*.tar.xz
+*.zip
+*.deb
+*.img
+*.img.xz
+
+# Allow specific zips if explicitly tracked
+!docs/assets/*.zip

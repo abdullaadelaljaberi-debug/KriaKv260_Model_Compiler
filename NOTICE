@@ -1,0 +1,14 @@
+KriaKv260_Model_Compiler
+Copyright 2026 KriaKv260_Model_Compiler contributors
+
+Licensed under the Apache License, Version 2.0 (the "License").
+You may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+This pipeline relies on:
+  - Vitis-AI 3.5 (Apache 2.0) — github.com/Xilinx/Vitis-AI
+  - Ultralytics YOLOv5 (AGPL-3.0) — github.com/ultralytics/yolov5
+  - Megvii YOLOX (Apache 2.0) — github.com/Megvii-BaseDetection/YOLOX
+  - PYNQ + DPU-PYNQ (BSD-3-Clause) — github.com/Xilinx/PYNQ

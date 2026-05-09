@@ -1,0 +1,78 @@
+[build-system]
+requires       = ["setuptools>=61.0", "wheel"]
+build-backend  = "setuptools.build_meta"
+
+[project]
+name            = "lpr_pipeline"
+version         = "0.1.0"
+description     = "Compile + deploy pipeline for object-detection models on Xilinx Kria KV260 (Vitis-AI 3.5)"
+readme          = "README.md"
+license         = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+authors         = [
+    {name = "KriaKv260_Model_Compiler contributors"},
+]
+keywords        = ["vitis-ai", "kria", "kv260", "yolov5", "yolox", "object-detection", "fpga"]
+classifiers     = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Hardware",
+    "Operating System :: POSIX :: Linux",
+]
+
+# Runtime deps split across host (compile-time) and Kria (runtime) — see docs.
+# This minimal set is the package's import surface.
+dependencies = [
+    "numpy>=1.21",
+    "opencv-python>=4.5",
+]
+
+[project.optional-dependencies]
+# Host PC: needed during quantization + compile (run inside Vitis-AI Docker)
+host = [
+    "torch>=1.13",
+    "torchvision",
+    "pillow>=9.0",
+    "matplotlib>=3.5",
+    "pyyaml>=6.0",
+    "tqdm>=4.64",
+    "papermill>=2.4",                 # to run notebooks non-interactively
+]
+
+# Kria: needed at runtime on the board (most are already in the pynq-venv)
+kria = [
+    "pillow>=9.0",
+    "ipywidgets>=8.0",
+]
+
+# Evaluation: mAP calculation
+eval = [
+    "pycocotools>=2.0.6",
+]
+
+# Dev / lint
+dev = [
+    "ruff>=0.1",
+    "pytest>=7.0",
+]
+
+[project.urls]
+Repository = "https://github.com/AbdullaAdel/KriaKv260_Model_Compiler"
+Issues     = "https://github.com/AbdullaAdel/KriaKv260_Model_Compiler/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lpr_pipeline*"]
+
+[tool.setuptools.package-data]
+"lpr_pipeline" = ["**/*.yaml", "**/*.json"]
+
+[tool.ruff]
+line-length      = 100
+target-version   = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]                     # line length is enforced by formatter not lint
