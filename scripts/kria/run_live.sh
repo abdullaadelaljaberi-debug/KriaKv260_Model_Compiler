@@ -74,10 +74,28 @@ if [[ ! -f "$NOTEBOOK" ]]; then
     log_warn "Live notebook not found at $NOTEBOOK"
     log_warn "  This notebook is delivered in Pass 6. For now, falling back to your"
     log_warn "  existing notebook 09v2 if you have it staged."
-    # Look for the user's existing live notebook
-    fallback=$(find "$HOME" -maxdepth 3 -name "09*v2*.ipynb" 2>/dev/null | head -1)
+
+    # Search candidates: current $HOME, plus the invoking user's home if running under sudo.
+    # Under `sudo`, $HOME == /root (not the original user's home), so we'd miss notebooks
+    # staged at /home/ubuntu/. SUDO_USER is set by sudo to the invoking username.
+    declare -a search_homes=( "$HOME" )
+    if [[ -n "${SUDO_USER:-}" ]] && [[ "$SUDO_USER" != "root" ]]; then
+        sudo_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+        if [[ -n "$sudo_home" ]] && [[ "$sudo_home" != "$HOME" ]]; then
+            search_homes+=( "$sudo_home" )
+        fi
+    fi
+
+    fallback=""
+    for h in "${search_homes[@]}"; do
+        fallback=$(find "$h" -maxdepth 3 -name "09*v2*.ipynb" 2>/dev/null | head -1)
+        [[ -n "$fallback" ]] && break
+    done
+
     if [[ -z "$fallback" ]]; then
-        die "No live notebook found. Stage notebook 09v2 in your home dir."
+        die "No live notebook found. Stage notebook 09v2 in one of:
+  $(printf '    %s\n' "${search_homes[@]}")
+Or wait for Pass 6's notebooks/02_deploy_live.ipynb."
     fi
     NOTEBOOK="$fallback"
     log_info "Using fallback: $NOTEBOOK"
