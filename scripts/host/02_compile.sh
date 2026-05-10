@@ -19,6 +19,14 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 N_CALIB="${N_CALIB:-200}"
 NUM_CLASSES="${NUM_CLASSES:-1}"
+SWAP_ACTIVATIONS="${SWAP_ACTIVATIONS:-true}"
+
+# Convert SWAP_ACTIVATIONS env var to Python boolean literal
+case "${SWAP_ACTIVATIONS,,}" in
+    true|yes|1|on)  SWAP_PY="True" ;;
+    false|no|0|off) SWAP_PY="False" ;;
+    *) die "SWAP_ACTIVATIONS must be true/false, got: $SWAP_ACTIVATIONS" ;;
+esac
 
 usage() {
     cat <<EOF
@@ -36,6 +44,11 @@ Environment overrides:
   VAI_IMAGE    Docker image tag. Default: auto-detect (GPU preferred over CPU)
   N_CALIB      Number of calibration images to use (default: $N_CALIB)
   NUM_CLASSES  Number of object classes the model was trained on (default: 1)
+  SWAP_ACTIVATIONS  true (default) — auto-swap SiLU → LeakyReLU(0.1015625) for
+               DPU compatibility. Set to false to preserve the original
+               activations (xmodel will fragment into multi-DPU subgraphs;
+               must be deployed via vitis_ai_library.GraphRunner instead of
+               pynq_dpu.overlay.load_model). See docs/MODELS.md.
 EOF
     exit 2
 }
@@ -66,6 +79,7 @@ log_info "weights : $WEIGHTS_REL"
 log_info "calib   : $CALIB_REL"
 log_info "output  : $OUT_REL"
 log_info "nc      : $NUM_CLASSES"
+log_info "swap    : $SWAP_ACTIVATIONS  (SiLU → LeakyReLU)"
 
 if ! docker_ok; then
     die "docker daemon not reachable. Run scripts/host/00_check_prereqs.sh."
@@ -135,6 +149,7 @@ WORKDIR = "/workspace/build/$VARIANT"
 OUT     = "/workspace/${OUT#$REPO_ROOT/}"
 NC      = $NUM_CLASSES
 N_CALIB = $N_CALIB
+SWAP_ACT = $SWAP_PY
 
 try:
     spec = get_spec(VARIANT)
@@ -151,6 +166,7 @@ try:
         out_xmodel = Path(OUT),
         nc         = NC,
         n_calib    = N_CALIB,
+        swap_activations = SWAP_ACT,
     )
 
     compiler = get_compiler(FAMILY)
@@ -180,6 +196,7 @@ docker_args=( --rm
     -v "$HOME/.cache:/home/$(whoami)/.cache:rw"
     -e PYTHONPATH=/workspace
     -e PYTHONDONTWRITEBYTECODE=1
+    -e PIP_CACHE_DIR=/workspace/build/.pip_cache
 )
 
 (( USE_GPU == 1 )) && docker_args+=( --gpus all )

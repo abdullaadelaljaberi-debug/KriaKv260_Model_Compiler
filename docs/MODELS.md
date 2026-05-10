@@ -110,3 +110,67 @@ Every xmodel is compiled for the KV260's B4096 DPU at fingerprint
 will load but fail at execution time with a fingerprint-mismatch error.
 The compile pipeline always targets B4096 / VAI 3.5; reconfiguring is
 out of scope.
+## Activation function policy
+
+The KV260's DPUCZDX8G has limited hardware support for activation functions:
+
+- ✅ **ReLU**, **ReLU6**, **LeakyReLU(0.1015625)** — fully accelerated on the DPU
+- ❌ **SiLU** (Swish), **GELU**, **Mish**, custom — must run on CPU
+
+Most modern object detection models default to SiLU, which causes a problem
+on the DPU: each SiLU op forces a CPU subgraph, and large models can fragment
+into 100+ tiny DPU+CPU pieces. Two consequences:
+
+1. Inference runs 2-4× slower (CPU↔DPU transfer overhead)
+2. `pynq_dpu.DpuOverlay.load_model()` refuses to load multi-subgraph xmodels
+   — its `assert len(subgraphs) == 1` fails. You'd need
+   `vitis_ai_library.GraphRunner` (the multi-subgraph runner used for YOLOX)
+
+The pipeline addresses this by automatically swapping SiLU → LeakyReLU(0.1015625)
+before quantization. The slope `0.1015625` (= 13/128) is the only value the
+DPU supports natively; using it directly avoids the train-vs-deploy numerical
+drift that the quantizer's auto-correction would otherwise introduce.
+
+### Four ways to handle SiLU in your trained model
+
+In order of resulting accuracy:
+
+**Option A — train with LeakyReLU from the start (best accuracy)**
+
+Modify your training script to swap SiLU → LeakyReLU(0.1015625) before
+training begins. The model adapts to LeakyReLU during training. Recommended
+for new projects. See `02_train_yolov5.ipynb` in the upstream lpr_thesis
+repo for an example that does exactly this.
+
+**Option B — fine-tune after swap (good compromise)**
+
+Take a SiLU-trained checkpoint, swap activations, fine-tune for 5-10 epochs
+on the same dataset. Usually recovers >95% of the original accuracy.
+Recommended when retraining from scratch is impractical but a short
+fine-tune is feasible.
+
+**Option C — swap at compile time (default; small accuracy hit)**
+
+This is what `02_compile.sh` does by default. The model's weights were
+tuned for SiLU; replacing the activation introduces error throughout the
+network. For YOLOv5 the SiLU and LeakyReLU(0.1) curves are similar enough
+that the accuracy hit is usually 1-3 mAP@0.5 points. Acceptable when
+accuracy isn't tightly constrained.
+
+**Option D — keep SiLU, deploy with multi-subgraph runner (exact accuracy, much slower)**
+
+Disable the swap with the `SWAP_ACTIVATIONS=false` env var:
+
+```bash
+SWAP_ACTIVATIONS=false bash scripts/host/02_compile.sh yolov5 yolov5n \
+    data/weights/best.pt data/calib/
+```
+
+The xmodel will fragment into many DPU+CPU subgraphs. Won't load via
+`pynq_dpu.overlay.load_model()`. Must use `vitis_ai_library.GraphRunner`
+(the deploy path used for YOLOX). Inference will be 2-4× slower than the
+swapped version due to CPU↔DPU bouncing.
+
+Rarely the right choice. Use only when exact accuracy preservation
+matters more than inference speed, and you're prepared to use the
+multi-subgraph deploy runner.

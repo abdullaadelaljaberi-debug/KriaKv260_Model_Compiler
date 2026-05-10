@@ -34,9 +34,18 @@ class CompileInputs:
     calib_dir:   Path            # directory of calibration images
     work_dir:    Path            # scratch directory for intermediates
     out_xmodel:  Path            # final xmodel destination
-    nc:          int             # number of classes (overrides spec default for retrained models)
+    nc:          int             # number of classes (overrides spec default)
     n_calib:     int = 200       # number of calibration images to use
     seed:        int = 42        # for reproducible calibration sampling
+
+    # Whether to auto-swap non-DPU activations (SiLU, GELU, Mish) with
+    # LeakyReLU(0.1015625) before quantization. Default True because the
+    # KV260 DPU has no hardware SiLU and each one fragments the graph.
+    # Set to False to preserve the original activations — the resulting
+    # xmodel will still compile but require multi-DPU-subgraph runtime
+    # (vitis_ai_library.GraphRunner) and run 2-4x slower.
+    # See docs/MODELS.md → "Activation function policy" for the tradeoffs.
+    swap_activations: bool = True
 
 
 class BaseCompiler(ABC):
