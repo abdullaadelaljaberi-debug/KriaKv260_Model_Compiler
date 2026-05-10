@@ -37,10 +37,10 @@ source "$SCRIPT_DIR/lib/common.sh"
 parse_common_flags "$@"
 
 # Config — exposed as env vars so users can override
-# Default URL for vai3.5_kr260.zip. The package is hosted on AMD's GitHub
-# Vitis-AI v3.5 release. If AMD moves it, override with:
+# Default URL for vai3.5_kr260.zip. Hosted on AMD's openDownload portal
+# If AMD moves it, override with:
 #   VAI35_KR260_ZIP_URL=... bash 01_install_vai35.sh
-VAI35_KR260_ZIP_URL="${VAI35_KR260_ZIP_URL:-https://github.com/Xilinx/Vitis-AI/releases/download/v3.5/vai3.5_kr260.zip}"
+VAI35_KR260_ZIP_URL="${VAI35_KR260_ZIP_URL:-https://www.xilinx.com/bin/public/openDownload?filename=vai3.5_kr260.zip}"
 
 # Kria-PYNQ git repo branch. Pinning to v3.0.1 — current stable as of pipeline writing.
 KRIA_PYNQ_REPO="${KRIA_PYNQ_REPO:-https://github.com/Xilinx/Kria-PYNQ.git}"
@@ -190,11 +190,17 @@ if [[ -d /usr/local/share/pynq-venv ]]; then
 fi
 
 # ─── STAGE 4: VAI 3.5 upgrade ──────────────────────────────────────────────
+# Source: https://github.com/amd/Kria-RoboticsAI
+#         files/scripts/install_update_kr260_to_vitisai35.sh
+# Adapted to: KV260 (vs KR260 in the original); idempotent stamps; quiet mode;
+# better error handling.
 log_step "[4/5] VAI 3.5 runtime upgrade"
 
 vai_v=$(vai_installed_version)
-if [[ "$vai_v" == "3.5" ]]; then
-    log_ok "VAI 3.5 already installed — skipping upgrade"
+VAI35_STAMP="/var/local/kriakv260_vai35.done"
+
+if [[ "$vai_v" == "3.5" ]] && [[ -f "$VAI35_STAMP" ]]; then
+    log_ok "VAI 3.5 already installed and patched — skipping upgrade"
 else
     if [[ -n "$vai_v" ]]; then
         log_info "Current VAI version: $vai_v. Upgrading to 3.5."
@@ -202,17 +208,16 @@ else
         log_info "No VAI runtime detected. Installing 3.5."
     fi
 
-    # ── 4a. Download vai3.5_kr260.zip ──────────────────────────────────────
+    # ── 4a. Download vai3.5_kr260.zip from xilinx.com ─────────────────────
     mkdir -p "$STAGE_DIR"
     ZIP_PATH="$STAGE_DIR/vai3.5_kr260.zip"
     if [[ -f "$ZIP_PATH" ]] && unzip -tq "$ZIP_PATH" &>/dev/null; then
         log_ok "  $ZIP_PATH already downloaded and valid"
     else
-        log_info "  Downloading $VAI35_KR260_ZIP_URL"
+        log_info "  Downloading from $VAI35_KR260_ZIP_URL"
         if ! wget --show-progress -O "$ZIP_PATH" "$VAI35_KR260_ZIP_URL"; then
-            die "Download failed. Verify URL:
-  $VAI35_KR260_ZIP_URL
-  Set VAI35_KR260_ZIP_URL env var to override."
+            die "Download failed. URL may have changed. Override with:
+  VAI35_KR260_ZIP_URL=<new_url> bash scripts/kria/01_install_vai35.sh"
         fi
         if ! unzip -tq "$ZIP_PATH"; then
             die "Downloaded file is corrupt: $ZIP_PATH"
@@ -220,97 +225,69 @@ else
         log_ok "  Downloaded ($(stat -c%s "$ZIP_PATH" | numfmt --to=iec))"
     fi
 
-    # Unzip into a subdirectory of stage so we can inspect contents
+    # Unzip into a subdirectory of stage
     EXTRACT_DIR="$STAGE_DIR/vai3.5_kr260"
-    rm -rf "$EXTRACT_DIR"
-    mkdir -p "$EXTRACT_DIR"
-    unzip -q "$ZIP_PATH" -d "$EXTRACT_DIR"
-    log_debug "  Extracted to $EXTRACT_DIR"
-
-    # ── 4b. Install debs in dependency order ───────────────────────────────
-    # Order matters because each package depends on the previous one(s).
-    # Standard VAI dependency chain:
-    #   unilog → xir → target_factory → vart-runtime → vitis-ai-library
-    log_info "  Installing VAI 3.5 deb packages in dependency order"
-
-    # Find the debs (the zip's internal layout may vary; we search recursively)
-    declare -a DEBS_FOUND=()
-    while IFS= read -r -d '' deb; do
-        DEBS_FOUND+=("$deb")
-    done < <(find "$EXTRACT_DIR" -name "*.deb" -print0)
-
-    if (( ${#DEBS_FOUND[@]} == 0 )); then
-        die "No .deb files found in $EXTRACT_DIR.
-  Layout of the zip may have changed. Inspect:
-    ls -R $EXTRACT_DIR"
+    if [[ ! -d "$EXTRACT_DIR/target/runtime_deb" ]]; then
+        rm -rf "$EXTRACT_DIR"
+        unzip -q "$ZIP_PATH" -d "$STAGE_DIR"
+        # The zip extracts to a vai3.5_kr260/ dir directly inside STAGE_DIR
+        if [[ ! -d "$EXTRACT_DIR" ]]; then
+            die "After unzipping, $EXTRACT_DIR not found.
+  Inspect: ls -la $STAGE_DIR"
+        fi
+        log_debug "  Extracted to $EXTRACT_DIR"
+    else
+        log_ok "  Already extracted: $EXTRACT_DIR"
     fi
 
-    # Install in the canonical dependency order. We grep for package name
-    # substrings; this is more robust to filename variations than hardcoding.
-    install_deb_by_pattern() {
-        local pattern="$1"
-        local deb=""
-        for d in "${DEBS_FOUND[@]}"; do
-            if [[ "$(basename "$d")" =~ $pattern ]]; then
-                deb="$d"
-                break
-            fi
-        done
-        if [[ -z "$deb" ]]; then
-            log_warn "  no deb matching '$pattern' — skipping"
-            return 0
-        fi
-        log_info "  dpkg -i $(basename "$deb")"
-        need_sudo dpkg -i "$deb" || {
-            # Try to resolve any missing deps with apt
-            log_warn "  dpkg failed; attempting 'apt --fix-broken install'"
-            need_sudo apt-get install -f -y || \
-                die "Could not install $(basename "$deb"). Check $LOG_FILE."
-        }
-    }
+    # ── 4b. Run AMD's setup.sh on the runtime_deb dir ──────────────────────
+    # This installs all the .deb files in the correct order. Don't try to
+    # parse / reorder them; the bundled setup.sh has been tested by AMD.
+    RUNTIME_DEB_DIR="$EXTRACT_DIR/target/runtime_deb"
+    if [[ ! -f "$RUNTIME_DEB_DIR/setup.sh" ]]; then
+        die "Expected $RUNTIME_DEB_DIR/setup.sh not found.
+  The zip's layout may have changed. Inspect: ls -R $EXTRACT_DIR"
+    fi
 
-    install_deb_by_pattern "^unilog"
-    install_deb_by_pattern "^xir"
-    install_deb_by_pattern "^target.factory|^target-factory"
-    install_deb_by_pattern "^libvart|^vart"
-    install_deb_by_pattern "^libvitis.ai.library|^vitis.ai.library"
+    log_info "  Running AMD's setup.sh (installs VAI 3.5 debs)"
+    (
+        cd "$RUNTIME_DEB_DIR"
+        need_sudo bash setup.sh
+    ) || die "setup.sh failed. Check $LOG_FILE for the error."
+    log_ok "  VAI 3.5 debs installed via setup.sh"
 
-    log_ok "  VAI 3.5 debs installed"
-
-    # ── 4c. Copy lack_lib helper libs (workaround) ─────────────────────────
-    # On some Kria-PYNQ + VAI 3.5 combos, certain symbols aren't in the system
-    # /usr/lib so we drop in additional .so files shipped in the zip's
-    # lack_lib/ subdirectory.
-    LACK_LIB_DIR=$(find "$EXTRACT_DIR" -maxdepth 3 -type d -name "lack_lib" | head -1)
-    if [[ -n "$LACK_LIB_DIR" ]] && [[ -d "$LACK_LIB_DIR" ]]; then
-        log_info "  Copying helper libs from lack_lib/ → /usr/lib/"
-        need_sudo cp -v "$LACK_LIB_DIR"/* /usr/lib/ 2>&1 | tail -5
+    # ── 4c. Copy lack_lib helper libs ──────────────────────────────────────
+    # lack_lib.tar.gz lives in vai3.5_kr260/target/ (one level up from runtime_deb)
+    LACK_LIB_TGZ="$EXTRACT_DIR/target/lack_lib.tar.gz"
+    if [[ -f "$LACK_LIB_TGZ" ]]; then
+        log_info "  Extracting and installing lack_lib helper libs"
+        (
+            cd "$EXTRACT_DIR/target"
+            tar -xzf lack_lib.tar.gz
+            need_sudo cp -r lack_lib/* /usr/lib/
+        ) || die "lack_lib install failed"
         need_sudo ldconfig
         log_ok "  helper libs installed"
     else
-        log_warn "  No lack_lib/ directory in the zip — may not be needed"
-        log_warn "  for this VAI 3.5 release. If glog/symbol errors occur"
-        log_warn "  at runtime, check the zip's actual contents."
+        log_warn "  No $LACK_LIB_TGZ found — skipping (layout may have changed)"
     fi
 
-    # ── 4d. glog 0.5.0 workaround ─────────────────────────────────────────
-    # Older Ubuntu may ship glog 0.4.x; VAI 3.5 needs 0.5+. The pynq-venv
-    # may have an older bundled glog that we need to override.
-    log_info "  glog version check"
-    glog_v=$(dpkg -s libgoogle-glog0v5 2>/dev/null | awk -F: '/^Version/ {print $2}' | xargs)
-    if [[ -n "$glog_v" ]]; then
-        log_ok "    libgoogle-glog0v5 $glog_v installed"
+    # ── 4d. Copy xbutil2 to /usr/bin/unwrapped/ ────────────────────────────
+    XBUTIL2="$EXTRACT_DIR/xbutil_tool/xbutil2"
+    if [[ -f "$XBUTIL2" ]]; then
+        log_info "  Installing xbutil2 to /usr/bin/unwrapped/"
+        need_sudo mkdir -p /usr/bin/unwrapped
+        need_sudo cp "$XBUTIL2" /usr/bin/unwrapped/
+        need_sudo chmod +x /usr/bin/unwrapped/xbutil2
+        log_ok "  xbutil2 installed"
     else
-        log_warn "    libgoogle-glog0v5 not found. Installing from apt..."
-        need_sudo apt-get update
-        need_sudo apt-get install -y libgoogle-glog0v5 \
-            || log_warn "    apt install libgoogle-glog0v5 failed — may need a PPA"
+        log_warn "  $XBUTIL2 not found — skipping"
     fi
 
-    # Verify installed version is 3.5
+    # Verify VAI runtime is now 3.5
     vai_v=$(vai_installed_version)
     if [[ "$vai_v" == "3.5" ]]; then
-        log_ok "  VAI 3.5 successfully installed"
+        log_ok "  VAI 3.5 runtime verified"
     else
         die "VAI install completed but version is '$vai_v', expected '3.5'.
   Check $LOG_FILE for clues, or inspect:
@@ -318,39 +295,102 @@ else
     fi
 fi
 
-# ─── STAGE 5: DPU bitstream ────────────────────────────────────────────────
-log_step "[5/5] DPU bitstream (VAI 3.5 / design_contest_3.5 branch)"
 
-# DPU-PYNQ has a separate repo with the bitstream files (.bit, .hwh, .xclbin).
-# We clone the design_contest_3.5 branch which targets VAI 3.5.
-BITSTREAM_DIR="/home/$USER/dpu_pynq_vai35"
-if [[ -d "$BITSTREAM_DIR/boards/kv260" ]]; then
-    log_ok "DPU-PYNQ already cloned at $BITSTREAM_DIR"
+# ─── STAGE 5: DPU-PYNQ for VAI 3.5 + post-install patches ──────────────────
+log_step "[5/5] DPU-PYNQ for VAI 3.5 + post-install patches"
+
+# Per AMD's script:
+#   git clone -b design_contest_3.5 DPU-PYNQ
+#   source pynq_venv.sh
+#   pip install . --no-build-isolation
+#   purge old pynq-dpu notebooks, get new ones
+#   patch pynq_venv.sh to export LD_LIBRARY_PATH=/usr/lib
+#   strip /usr/bin/ prefix from xdputil script
+DPU_PYNQ_DIR="$STAGE_DIR/DPU-PYNQ"
+
+if [[ -f "$VAI35_STAMP" ]]; then
+    log_ok "post-install patches already applied (stamp: $VAI35_STAMP)"
 else
-    log_info "Cloning DPU-PYNQ ($DPU_PYNQ_BRANCH branch) to $BITSTREAM_DIR..."
-    git clone --depth 1 -b "$DPU_PYNQ_BRANCH" "$DPU_PYNQ_REPO" "$BITSTREAM_DIR" \
-        || die "DPU-PYNQ clone failed. Check network access to github.com."
-fi
-
-# Verify the KV260 bitstream files are present
-KV260_BS_DIR="$BITSTREAM_DIR/boards/kv260"
-if [[ -d "$KV260_BS_DIR" ]]; then
-    bs_files=$(find "$KV260_BS_DIR" -maxdepth 2 -name "*.bit" -o -name "*.xclbin" -o -name "*.hwh" 2>/dev/null | wc -l)
-    if (( bs_files >= 3 )); then
-        log_ok "DPU bitstream files present ($bs_files files in $KV260_BS_DIR)"
+    # 5a. Clone DPU-PYNQ design_contest_3.5
+    if [[ -d "$DPU_PYNQ_DIR/.git" ]]; then
+        log_ok "  DPU-PYNQ already cloned at $DPU_PYNQ_DIR"
     else
-        log_warn "Only $bs_files bitstream files found. Expected ≥3 (.bit, .hwh, .xclbin)"
-        log_warn "Check: ls $KV260_BS_DIR"
+        log_info "  Cloning DPU-PYNQ ($DPU_PYNQ_BRANCH branch)..."
+        git clone --depth 1 -b "$DPU_PYNQ_BRANCH" "$DPU_PYNQ_REPO" "$DPU_PYNQ_DIR" \
+            || die "DPU-PYNQ clone failed. Check network access to github.com."
+        log_ok "  DPU-PYNQ cloned"
     fi
-else
-    log_warn "No $KV260_BS_DIR — branch layout may have changed."
-    log_warn "Check the DPU-PYNQ repo manually."
+
+    # 5b. pip install DPU-PYNQ into pynq-venv (NOT via pip in the venv directly —
+    # AMD's script sources pynq_venv.sh first to use the venv's python3 transparently)
+    log_info "  Installing DPU-PYNQ into pynq-venv (no-build-isolation)"
+    (
+        # Use a subshell so the source of pynq_venv.sh doesn't pollute our env
+        set +u   # pynq_venv.sh may dereference unset vars
+        source /etc/profile.d/pynq_venv.sh
+        cd "$DPU_PYNQ_DIR"
+        need_sudo /usr/local/share/pynq-venv/bin/python3 -m pip install . --no-build-isolation
+    ) || die "DPU-PYNQ pip install failed. Check $LOG_FILE."
+    log_ok "  DPU-PYNQ installed in pynq-venv"
+
+    # 5c. Refresh pynq-dpu notebooks
+    log_info "  Refreshing pynq-dpu notebooks at /home/root/jupyter_notebooks/pynq-dpu"
+    if [[ -d /home/root/jupyter_notebooks ]]; then
+        need_sudo rm -rf /home/root/jupyter_notebooks/pynq-dpu
+        (
+            set +u
+            source /etc/profile.d/pynq_venv.sh
+            cd /home/root/jupyter_notebooks
+            need_sudo /usr/local/share/pynq-venv/bin/pynq get-notebooks pynq-dpu -p . --force
+        ) || log_warn "  pynq get-notebooks failed (non-fatal: 'No device found' is OK here)"
+        log_ok "  notebooks refreshed"
+    else
+        log_warn "  /home/root/jupyter_notebooks doesn't exist — skipping notebook refresh"
+    fi
+
+    # 5d. Patch /etc/profile.d/pynq_venv.sh to export LD_LIBRARY_PATH=/usr/lib
+    # Required so VART can find libunilog.so etc.
+    PYNQ_VENV_SH="/etc/profile.d/pynq_venv.sh"
+    if [[ -f "$PYNQ_VENV_SH" ]]; then
+        if grep -q "export LD_LIBRARY_PATH=/usr/lib" "$PYNQ_VENV_SH"; then
+            log_ok "  pynq_venv.sh already exports LD_LIBRARY_PATH=/usr/lib"
+        else
+            log_info "  Appending LD_LIBRARY_PATH=/usr/lib to $PYNQ_VENV_SH"
+            echo "export LD_LIBRARY_PATH=/usr/lib" | need_sudo tee -a "$PYNQ_VENV_SH" >/dev/null
+            log_ok "  LD_LIBRARY_PATH patch applied"
+        fi
+    else
+        log_warn "  $PYNQ_VENV_SH not found — LD_LIBRARY_PATH patch skipped"
+    fi
+
+    # 5e. Patch /usr/bin/xdputil to remove the '/usr/bin/' prefix on the python3 invocation
+    # Otherwise xdputil ignores pynq-venv's python3.
+    if [[ -f /usr/bin/xdputil ]]; then
+        if grep -q "^#!/usr/bin/python3" /usr/bin/xdputil; then
+            log_info "  Patching /usr/bin/xdputil to use pynq-venv's python3"
+            need_sudo sed -i "s/\/usr\/bin\///g" /usr/bin/xdputil
+            log_ok "  xdputil patched"
+        else
+            log_ok "  /usr/bin/xdputil already patched (or different layout)"
+        fi
+    else
+        log_warn "  /usr/bin/xdputil not found — patch skipped"
+    fi
+
+    # 5f. Drop the stamp file so this whole stage skips on re-runs
+    need_sudo touch "$VAI35_STAMP"
+    log_ok "  marked complete: $VAI35_STAMP"
 fi
 
 # ─── Done ───────────────────────────────────────────────────────────────────
 echo
-log_ok "Install complete. Next steps:"
-log_info "  1. Apply camera + system tuning:"
+log_ok "Install complete."
+log_warn "  ⚠ AMD recommends rebooting the board after this install."
+log_warn "    Run: sudo reboot"
+log_warn "    After reboot, validate by running a small pynq_dpu example."
+echo
+log_ok "Next steps:"
+log_info "  1. (After reboot) Apply camera + system tuning:"
 log_info "       bash scripts/kria/02_apply_tuning.sh"
 log_info "  2. Persist tuning across reboots:"
 log_info "       bash scripts/kria/03_install_systemd.sh"
