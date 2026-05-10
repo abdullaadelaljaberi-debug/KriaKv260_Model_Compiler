@@ -59,6 +59,10 @@ LOG_FILE="${LOG_FILE:-$HOME/kriakv260_install.log}"
 log_to_file "$LOG_FILE"
 log_info "Logging to $LOG_FILE"
 
+# ─── Initialize summary tracker ─────────────────────────────────────────────
+summary_init
+trap 'summary_print' EXIT
+
 # ─── prereq sanity: 00_check_prereqs.sh must have passed ────────────────────
 if ! bash "$SCRIPT_DIR/00_check_prereqs.sh" --quiet; then
     die "00_check_prereqs.sh failed. Run it directly to see what's wrong:
@@ -69,6 +73,7 @@ log_step "Kria install — script will skip already-done steps"
 
 # ─── STAGE 1: First-boot config (A3 partial automation) ────────────────────
 log_step "[1/5] First-boot config"
+summary_stage_start "1/5" "First-boot config"
 
 current_hostname=$(hostname)
 if [[ "$current_hostname" == "kria" ]] || [[ "$current_hostname" == "ubuntu" ]]; then
@@ -76,11 +81,14 @@ if [[ "$current_hostname" == "kria" ]] || [[ "$current_hostname" == "ubuntu" ]];
     if confirm "  Set hostname to 'kria-lpr'? (or N to skip)"; then
         need_sudo hostnamectl set-hostname kria-lpr
         log_ok "hostname set to kria-lpr (effective after reboot)"
+        summary_stage_done "hostname=kria-lpr"
     else
         log_info "  keeping current hostname '$current_hostname'"
+        summary_stage_done "hostname=$current_hostname (kept)"
     fi
 else
     log_ok "hostname '$current_hostname' (custom, leaving alone)"
+    summary_stage_done "hostname=$current_hostname"
 fi
 
 # Password change is NOT automated (would require expect, fragile).
@@ -98,6 +106,7 @@ log_info "  Skipping network config (already working — you SSH'd in)"
 
 # ─── STAGE 2: xlnx-config.sysinit ───────────────────────────────────────────
 log_step "[2/5] xlnx-config.sysinit (Xilinx-recommended system tuning)"
+summary_stage_start "2/5" "xlnx-config.sysinit"
 
 if ! have_cmd xlnx-config; then
     log_info "Installing xlnx-config snap..."
@@ -113,6 +122,7 @@ fi
 SYSINIT_STAMP="/var/local/kriakv260_sysinit.done"
 if [[ -f "$SYSINIT_STAMP" ]]; then
     log_ok "xlnx-config.sysinit already run (stamp: $SYSINIT_STAMP)"
+    summary_stage_skipped "stamp present"
 else
     log_info "Running xlnx-config.sysinit — installs base components"
     log_warn "  This step is interactive on a fresh system. Accept the defaults."
@@ -121,17 +131,22 @@ else
         need_sudo xlnx-config.sysinit || die "xlnx-config.sysinit failed"
         need_sudo touch "$SYSINIT_STAMP"
         log_ok "xlnx-config.sysinit complete"
+        summary_stage_done "ran sysinit, accepted defaults"
     else
         log_warn "  Skipped. Re-run this script to do it later."
+        summary_stage_skipped "user declined"
     fi
 fi
 
 # ─── STAGE 3: Kria-PYNQ ─────────────────────────────────────────────────────
 log_step "[3/5] Kria-PYNQ stack"
+summary_stage_start "3/5" "Kria-PYNQ stack"
 
 if [[ "$(kria_pynq_installed)" == "yes" ]]; then
     log_ok "Kria-PYNQ already installed at /usr/local/share/pynq-venv"
+    KRIA_PYNQ_FRESH_INSTALL=0
 else
+    KRIA_PYNQ_FRESH_INSTALL=1
     log_info "Cloning Kria-PYNQ ($KRIA_PYNQ_BRANCH branch)..."
     mkdir -p "$STAGE_DIR"
     cd "$STAGE_DIR"
@@ -159,6 +174,7 @@ fi
 # Kria-PYNQ's install.sh sometimes leaves the venv with numpy 2.x while cv2
 # was built against numpy 1.x, breaking imports. We pin numpy<2 unconditionally
 # (pip is a no-op if already at the right version).
+STAGE3_DETAIL=""
 if [[ -d /usr/local/share/pynq-venv ]]; then
     log_info "  Pinning numpy<2 in pynq-venv (cv2 ABI compatibility)"
     current_numpy=$(/usr/local/share/pynq-venv/bin/python -c "import numpy; print(numpy.__version__)" 2>/dev/null || echo "?")
@@ -168,25 +184,33 @@ if [[ -d /usr/local/share/pynq-venv ]]; then
         need_sudo /usr/local/share/pynq-venv/bin/pip install --quiet 'numpy<2' \
             || log_warn "    numpy downgrade failed; continuing"
 
-        # If the failed pynq-get-notebooks left pynq_composable notebooks missing,
-        # re-deliver them now that numpy is fixed.
-        if [[ ! -d /home/root/jupyter_notebooks/pynq_composable ]]; then
-            log_info "    Re-delivering pynq_composable notebooks"
-            need_sudo /usr/local/share/pynq-venv/bin/pynq-get-notebooks \
-                pynq_composable -p /home/root/jupyter_notebooks/ 2>&1 | tail -3 \
-                || log_warn "    pynq_composable re-delivery failed (non-fatal)"
-        fi
+        # Note: we previously tried `pynq-get-notebooks pynq_composable` here,
+        # but it always fails with 'No device found in the system' on a system
+        # without a loaded DPU overlay. We don't use pynq_composable's notebooks
+        # anyway — the package's Python is what matters and `import pynq_composable`
+        # works once numpy is fixed.
+        STAGE3_DETAIL="numpy downgraded $current_numpy → <2"
     else
         log_ok "    numpy $current_numpy (compatible with bundled cv2)"
+        STAGE3_DETAIL="numpy=$current_numpy, healthy"
     fi
 
     # Sanity check the full venv
     if /usr/local/share/pynq-venv/bin/python -c "import numpy, cv2, pynq, pynq_dpu" 2>/dev/null; then
         log_ok "  pynq-venv healthy: numpy + cv2 + pynq + pynq_dpu all importable"
+        if (( KRIA_PYNQ_FRESH_INSTALL == 1 )); then
+            summary_stage_done "fresh install; $STAGE3_DETAIL"
+        else
+            summary_stage_skipped "$STAGE3_DETAIL"
+        fi
     else
         log_warn "  pynq-venv health check failed — see /home/ubuntu/kriakv260_install.log"
         /usr/local/share/pynq-venv/bin/python -c "import numpy, cv2, pynq, pynq_dpu" 2>&1 | tail -5
+        summary_stage_failed "venv health check failed"
+        # Don't die: maybe user can recover. Let other stages run for diagnostics.
     fi
+else
+    summary_stage_failed "pynq-venv directory not found"
 fi
 
 # ─── STAGE 4: VAI 3.5 upgrade ──────────────────────────────────────────────
@@ -195,12 +219,14 @@ fi
 # Adapted to: KV260 (vs KR260 in the original); idempotent stamps; quiet mode;
 # better error handling.
 log_step "[4/5] VAI 3.5 runtime upgrade"
+summary_stage_start "4/5" "VAI 3.5 runtime upgrade"
 
 vai_v=$(vai_installed_version)
 VAI35_STAMP="/var/local/kriakv260_vai35.done"
 
 if [[ "$vai_v" == "3.5" ]] && [[ -f "$VAI35_STAMP" ]]; then
     log_ok "VAI 3.5 already installed and patched — skipping upgrade"
+    summary_stage_skipped "VAI 3.5 + stamp present"
 else
     if [[ -n "$vai_v" ]]; then
         log_info "Current VAI version: $vai_v. Upgrading to 3.5."
@@ -288,16 +314,20 @@ else
     vai_v=$(vai_installed_version)
     if [[ "$vai_v" == "3.5" ]]; then
         log_ok "  VAI 3.5 runtime verified"
+        summary_stage_done "installed via AMD setup.sh"
     else
-        die "VAI install completed but version is '$vai_v', expected '3.5'.
-  Check $LOG_FILE for clues, or inspect:
-    dpkg -s libvart-runtime"
+        die "VAI install completed but vai_installed_version returned '$vai_v', expected '3.5'.
+  Inspect installed VAI debs with:
+    dpkg -l | grep -iE 'vart|xir|unilog|target-factory'
+  And libvart specifically:
+    dpkg -s libvart | head -5"
     fi
 fi
 
 
 # ─── STAGE 5: DPU-PYNQ for VAI 3.5 + post-install patches ──────────────────
 log_step "[5/5] DPU-PYNQ for VAI 3.5 + post-install patches"
+summary_stage_start "5/5" "DPU-PYNQ for VAI 3.5"
 
 # Per AMD's script:
 #   git clone -b design_contest_3.5 DPU-PYNQ
@@ -310,6 +340,7 @@ DPU_PYNQ_DIR="$STAGE_DIR/DPU-PYNQ"
 
 if [[ -f "$VAI35_STAMP" ]]; then
     log_ok "post-install patches already applied (stamp: $VAI35_STAMP)"
+    summary_stage_skipped "stamp present"
 else
     # 5a. Clone DPU-PYNQ design_contest_3.5
     if [[ -d "$DPU_PYNQ_DIR/.git" ]]; then
@@ -380,7 +411,13 @@ else
     # 5f. Drop the stamp file so this whole stage skips on re-runs
     need_sudo touch "$VAI35_STAMP"
     log_ok "  marked complete: $VAI35_STAMP"
+    summary_stage_done "DPU-PYNQ installed; patches applied"
 fi
+
+# Set action hint in case any earlier stage failed
+summary_set_action "If a stage above failed, inspect:
+    grep -B2 -A20 'FAIL' $LOG_FILE | tail -50
+  Then re-run this script — completed stages will be skipped automatically."
 
 # ─── Done ───────────────────────────────────────────────────────────────────
 echo

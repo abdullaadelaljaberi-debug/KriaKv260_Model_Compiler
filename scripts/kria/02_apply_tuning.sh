@@ -27,18 +27,22 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 parse_common_flags "$@"
 
-# Brio USB ID: vendor 046d, product 085e. Used to prefer Brio over other cameras.
 BRIO_VENDOR="046d"
 BRIO_PRODUCT="085e"
 
 log_step "Apply runtime tuning"
 
+summary_init
+trap 'summary_print' EXIT
+
 # ─── 1. USB autosuspend OFF on every USB device ─────────────────────────────
 log_step "[1/3] USB autosuspend"
+summary_stage_start "1/3" "USB autosuspend"
 
 usb_devices=( /sys/bus/usb/devices/*/power/control )
 if (( ${#usb_devices[@]} == 0 )); then
     log_warn "  No USB power controls found at /sys/bus/usb/devices/*/power/control"
+    summary_stage_failed "no USB power controls"
 else
     log_info "  Disabling autosuspend on ${#usb_devices[@]} USB device(s)"
     for ctrl in "${usb_devices[@]}"; do
@@ -47,6 +51,7 @@ else
         fi
     done
     log_ok "  USB autosuspend disabled on all USB devices"
+    summary_stage_done "disabled on ${#usb_devices[@]} devices"
 fi
 
 # Also persist for future kernel modules
@@ -61,10 +66,12 @@ fi
 
 # ─── 2. CPU governor → performance ──────────────────────────────────────────
 log_step "[2/3] CPU governor"
+summary_stage_start "2/3" "CPU governor"
 
 governors=( /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor )
 if (( ${#governors[@]} == 0 )); then
     log_warn "  No cpufreq governors found — kernel may not support cpufreq"
+    summary_stage_skipped "no cpufreq support"
 else
     log_info "  Setting governor → performance on ${#governors[@]} core(s)"
     for g in "${governors[@]}"; do
@@ -75,15 +82,18 @@ else
     current=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "?")
     if [[ "$current" == "performance" ]]; then
         log_ok "  CPU governor: performance"
+        summary_stage_done "performance on ${#governors[@]} cores"
     else
         log_warn "  CPU governor wanted 'performance', got '$current'"
         log_warn "  Some Kria kernels lock the governor. This is mostly cosmetic; the SOC"
         log_warn "  rarely throttles at our power budget. Live demo will still hit ~60 fps."
+        summary_stage_done "wanted performance, got $current"
     fi
 fi
 
 # ─── 3. Camera tuning ───────────────────────────────────────────────────────
 log_step "[3/3] Camera tuning"
+summary_stage_start "3/3" "Camera tuning"
 
 if ! have_cmd v4l2-ctl; then
     log_warn "  v4l2-ctl not installed. Installing..."
@@ -131,6 +141,7 @@ cam_dev=$(find_camera_device)
 if [[ -z "$cam_dev" ]]; then
     log_warn "  No camera detected. Plug in the Brio (or another MJPG camera) and re-run."
     log_warn "  Continuing without camera tuning — other tuning has been applied."
+    summary_stage_skipped "no camera detected"
     exit 0
 fi
 log_ok "  Camera device: $cam_dev"
@@ -167,6 +178,7 @@ apply_v4l2_ctrl exposure_time_absolute 100
 apply_v4l2_ctrl gain 200
 apply_v4l2_ctrl exposure_dynamic_framerate 0     # don't auto-drop fps
 log_ok "  v4l2 settings applied (skipped controls that this camera doesn't support)"
+summary_stage_done "${cam_name:-camera}: MJPG@60fps, manual exposure"
 
 # ─── Camera sanity test ─────────────────────────────────────────────────────
 log_step "Camera sanity test (5-second capture)"
