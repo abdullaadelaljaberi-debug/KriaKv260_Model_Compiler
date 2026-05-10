@@ -1,12 +1,31 @@
-"""Deploy pipeline — runs on the Kria board.
+"""Deploy-side modules for running compiled xmodels on the Kria KV260.
 
-Filled in during Passes 5-6:
-    runner.py       ModelRunner (yolov5 + yolox; raises on others)
-    decoders.py     DFL + YOLOX decoders; stubs for v7/v4/SSD
-    camera.py       ThreadedCamera (Brio); AR1335 hook commented
-    eval.py         Batch inference + mAP@0.5 calculation
-    tuning.py       v4l2 + USB + CPU tuning helpers
+Public API:
 
-For now this subpackage exists only so importers don't fail when
-lpr_pipeline is on PYTHONPATH.
+    from lpr_pipeline.deploy import (
+        ModelRunner, Preprocessor, ThreadedCamera, decode_yolov5u, unletterbox,
+    )
+
+Currently supports the YOLOv5u (anchor-free DFL) family — yolov5n and yolov5s.
+YOLOX support exists in the model registry but needs the GraphRunner path
+and a decoder; we'll add those in a later pass.
+
+All modules in this package assume:
+  - The Kria-side scripts have been run (Pass 5): VAI 3.5 runtime, pynq-venv,
+    USB autosuspend off, governor=performance, camera tuned.
+  - The notebook is running as root (PYNQ-DPU needs root to mmap the FPGA).
+  - The xmodel was compiled by this pipeline (single DPU subgraph, NHWC outputs,
+    DPU fingerprint 0x101000056010407 for KV260 B4096 / VAI 3.5).
 """
+from lpr_pipeline.deploy.preprocess import Preprocessor, unletterbox
+from lpr_pipeline.deploy.decoders   import decode_yolov5u
+from lpr_pipeline.deploy.camera     import ThreadedCamera
+from lpr_pipeline.deploy.runner     import ModelRunner
+
+__all__ = [
+    "ModelRunner",
+    "Preprocessor",
+    "ThreadedCamera",
+    "decode_yolov5u",
+    "unletterbox",
+]
