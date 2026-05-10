@@ -155,6 +155,40 @@ else
     log_ok "Kria-PYNQ installed"
 fi
 
+# ─── Stage 3 post-fixes — apply even on re-runs (idempotent) ───────────────
+# Kria-PYNQ's install.sh sometimes leaves the venv with numpy 2.x while cv2
+# was built against numpy 1.x, breaking imports. We pin numpy<2 unconditionally
+# (pip is a no-op if already at the right version).
+if [[ -d /usr/local/share/pynq-venv ]]; then
+    log_info "  Pinning numpy<2 in pynq-venv (cv2 ABI compatibility)"
+    current_numpy=$(/usr/local/share/pynq-venv/bin/python -c "import numpy; print(numpy.__version__)" 2>/dev/null || echo "?")
+    log_debug "    current numpy in venv: $current_numpy"
+    if [[ "$current_numpy" == 2.* ]]; then
+        log_warn "    numpy $current_numpy is 2.x — downgrading to 1.x for cv2 compat"
+        need_sudo /usr/local/share/pynq-venv/bin/pip install --quiet 'numpy<2' \
+            || log_warn "    numpy downgrade failed; continuing"
+
+        # If the failed pynq-get-notebooks left pynq_composable notebooks missing,
+        # re-deliver them now that numpy is fixed.
+        if [[ ! -d /home/root/jupyter_notebooks/pynq_composable ]]; then
+            log_info "    Re-delivering pynq_composable notebooks"
+            need_sudo /usr/local/share/pynq-venv/bin/pynq-get-notebooks \
+                pynq_composable -p /home/root/jupyter_notebooks/ 2>&1 | tail -3 \
+                || log_warn "    pynq_composable re-delivery failed (non-fatal)"
+        fi
+    else
+        log_ok "    numpy $current_numpy (compatible with bundled cv2)"
+    fi
+
+    # Sanity check the full venv
+    if /usr/local/share/pynq-venv/bin/python -c "import numpy, cv2, pynq, pynq_dpu" 2>/dev/null; then
+        log_ok "  pynq-venv healthy: numpy + cv2 + pynq + pynq_dpu all importable"
+    else
+        log_warn "  pynq-venv health check failed — see /home/ubuntu/kriakv260_install.log"
+        /usr/local/share/pynq-venv/bin/python -c "import numpy, cv2, pynq, pynq_dpu" 2>&1 | tail -5
+    fi
+fi
+
 # ─── STAGE 4: VAI 3.5 upgrade ──────────────────────────────────────────────
 log_step "[4/5] VAI 3.5 runtime upgrade"
 
