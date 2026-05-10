@@ -352,28 +352,69 @@ else
         log_ok "  DPU-PYNQ cloned"
     fi
 
-    # 5b. pip install DPU-PYNQ into pynq-venv (NOT via pip in the venv directly —
-    # AMD's script sources pynq_venv.sh first to use the venv's python3 transparently)
+    # 5b. pip install DPU-PYNQ into pynq-venv.
+    #
+    # Two problems we work around here:
+    #
+    # (1) pynqutils download_overlays.py has a real bug: when no FPGA device
+    #     is currently loaded (true during a fresh install), it does
+    #         if len(devices) == 0 and type(Device.devices[0]) == EmbeddedDevice:
+    #     where both `devices` and `Device.devices` are empty lists, so the
+    #     `[0]` raises IndexError. We patch the file to fall back to the
+    #     "embedded board" assumption when Device.devices is empty.
+    #
+    # (2) Running pip via `sudo /path/to/python` strips the environment,
+    #     losing what `source pynq_venv.sh` did. AMD's reference script
+    #     avoids this by `sudo su`-ing first and running everything as root.
+    #     We replicate that by using `sudo bash -c "..."` so the source +
+    #     pip-install all happen in a single root shell.
+
+    # 5b-i. Patch pynqutils download_overlays.py (idempotent)
+    PYNQUTILS_DL="/usr/local/share/pynq-venv/lib/python3.10/site-packages/pynqutils/setup_utils/download_overlays.py"
+    if [[ -f "$PYNQUTILS_DL" ]]; then
+        if grep -q "len(devices) == 0 and type(Device.devices\[0\])" "$PYNQUTILS_DL" \
+                && ! grep -q "not Device.devices or type(Device.devices\[0\])" "$PYNQUTILS_DL"; then
+            log_info "  Patching pynqutils download_overlays.py (IndexError on empty device list)"
+            need_sudo sed -i \
+                's|len(devices) == 0 and type(Device.devices\[0\]) == EmbeddedDevice|len(devices) == 0 and (not Device.devices or type(Device.devices[0]) == EmbeddedDevice)|' \
+                "$PYNQUTILS_DL"
+            log_ok "  pynqutils patched"
+        else
+            log_debug "  pynqutils download_overlays.py already patched (or different version)"
+        fi
+    else
+        log_warn "  $PYNQUTILS_DL not found — patch skipped"
+    fi
+
+    # 5b-ii. Install via a single sudo bash so env survives
     log_info "  Installing DPU-PYNQ into pynq-venv (no-build-isolation)"
-    (
-        # Use a subshell so the source of pynq_venv.sh doesn't pollute our env
-        set +u   # pynq_venv.sh may dereference unset vars
-        source /etc/profile.d/pynq_venv.sh
-        cd "$DPU_PYNQ_DIR"
-        need_sudo /usr/local/share/pynq-venv/bin/python3 -m pip install . --no-build-isolation
-    ) || die "DPU-PYNQ pip install failed. Check $LOG_FILE."
+    if ! need_sudo bash -c "
+        set -e
+        [[ -f /etc/profile.d/pynq_venv.sh ]] && source /etc/profile.d/pynq_venv.sh
+        [[ -f /opt/xilinx/xrt/setup.sh ]] && source /opt/xilinx/xrt/setup.sh
+        export BOARD=KV260
+        cd '$DPU_PYNQ_DIR'
+        /usr/local/share/pynq-venv/bin/python3 -m pip install . --no-build-isolation
+    "; then
+        die "DPU-PYNQ pip install failed. Check $LOG_FILE for the error.
+  Common causes:
+    - pynqutils version differs from what we patched (inspect $PYNQUTILS_DL)
+    - Missing build-essential (verify: which gcc make)
+    - Network drop mid-build (re-run; pip will resume)
+    - XRT/zocl kernel module not loaded (verify: lsmod | grep zocl)"
+    fi
     log_ok "  DPU-PYNQ installed in pynq-venv"
 
-    # 5c. Refresh pynq-dpu notebooks
+    # 5c. Refresh pynq-dpu notebooks (same sudo bash -c pattern as 5b)
     log_info "  Refreshing pynq-dpu notebooks at /home/root/jupyter_notebooks/pynq-dpu"
     if [[ -d /home/root/jupyter_notebooks ]]; then
         need_sudo rm -rf /home/root/jupyter_notebooks/pynq-dpu
-        (
+        need_sudo bash -c "
             set +u
-            source /etc/profile.d/pynq_venv.sh
+            [[ -f /etc/profile.d/pynq_venv.sh ]] && source /etc/profile.d/pynq_venv.sh
             cd /home/root/jupyter_notebooks
-            need_sudo /usr/local/share/pynq-venv/bin/pynq get-notebooks pynq-dpu -p . --force
-        ) || log_warn "  pynq get-notebooks failed (non-fatal: 'No device found' is OK here)"
+            /usr/local/share/pynq-venv/bin/pynq get-notebooks pynq-dpu -p . --force
+        " || log_warn "  pynq get-notebooks failed (non-fatal: 'No device found' is OK here)"
         log_ok "  notebooks refreshed"
     else
         log_warn "  /home/root/jupyter_notebooks doesn't exist — skipping notebook refresh"
