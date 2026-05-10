@@ -59,8 +59,8 @@ dev = [
 ]
 
 [project.urls]
-Repository = "https://github.com/AbdullaAdel/KriaKv260_Model_Compiler"
-Issues     = "https://github.com/AbdullaAdel/KriaKv260_Model_Compiler/issues"
+Repository = "https://github.com/abdullaadelaljaberi-debug/KriaKv260_Model_Compiler"
+Issues     = "https://github.com/abdullaadelaljaberi-debug/KriaKv260_Model_Compiler/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

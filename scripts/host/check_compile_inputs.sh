@@ -274,6 +274,7 @@ PYEOF
         -v "$REPO_ROOT:/workspace:rw"
         -e PYTHONPATH=/workspace
         -e PYTHONDONTWRITEBYTECODE=1
+        -e PIP_CACHE_DIR=/workspace/build/.pip_cache
         -e WEIGHTS_IN_CONTAINER="/workspace/${WEIGHTS#$REPO_ROOT/}"
         -e CALIB_IN_CONTAINER="/workspace/${CALIB#$REPO_ROOT/}"
     )

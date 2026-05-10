@@ -34,7 +34,7 @@ This is a thesis-companion pipeline. v1 ships:
 ### One-time host setup
 
 ```bash
-git clone https://github.com/AbdullaAdel/KriaKv260_Model_Compiler.git
+git clone https://github.com/abdullaadelaljaberi-debug/KriaKv260_Model_Compiler.git
 cd KriaKv260_Model_Compiler
 bash scripts/host/00_check_prereqs.sh        # verify docker, nvidia, etc.
 bash scripts/host/01_install_vai.sh           # pull Vitis-AI 3.5 docker
