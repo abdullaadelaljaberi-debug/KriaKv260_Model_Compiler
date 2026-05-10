@@ -91,3 +91,5 @@ log_info "  - 02_apply_tuning.sh will run on every boot"
 log_info "  - Disable later with:  sudo systemctl disable $UNIT_NAME"
 log_info "  - Manual re-run:       sudo systemctl restart $UNIT_NAME"
 log_info "  - Inspect logs:        sudo journalctl -u $UNIT_NAME"
+
+exit 0

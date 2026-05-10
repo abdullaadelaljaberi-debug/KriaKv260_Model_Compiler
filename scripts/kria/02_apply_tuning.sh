@@ -211,3 +211,8 @@ echo
 log_ok "Tuning applied (this session only)."
 log_info "Next:  bash scripts/kria/03_install_systemd.sh"
 log_info "       (persists tuning across reboots)"
+
+# Explicit exit 0. Without this, the script's exit code is whatever the last
+# command's $? was — which can be non-zero from a `|| log_warn` clause earlier,
+# even though semantically the script succeeded. Systemd reads exit 0 as success.
+exit 0

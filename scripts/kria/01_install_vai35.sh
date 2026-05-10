@@ -477,3 +477,5 @@ log_info "       bash scripts/kria/run_live.sh yolov5n"
 echo
 log_info "Cleanup (optional): rm -rf $STAGE_DIR"
 log_info "Logs: $LOG_FILE"
+
+exit 0
