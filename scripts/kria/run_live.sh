@@ -58,6 +58,18 @@ JUPYTER_HOST="${JUPYTER_HOST:-127.0.0.1}"
 # ─── prereqs ───────────────────────────────────────────────────────────────
 log_step "Live demo: $VARIANT"
 
+# 0. Must be root: PYNQ-DPU needs root to mmap the FPGA configuration registers
+# (pynq.ps._ClocksUltrascale raises "Root permissions required" otherwise).
+if [[ $EUID -ne 0 ]]; then
+    log_err "This script must be run as root: the PYNQ-DPU stack mmaps the FPGA"
+    log_err "configuration registers, which requires root permissions."
+    log_err ""
+    log_err "Re-run as:"
+    log_err "  sudo bash scripts/kria/run_live.sh $VARIANT"
+    exit 1
+fi
+log_ok "running as root (needed for FPGA mmap)"
+
 # 1. xmodel exists?
 XMODEL="/home/ubuntu/xmodels_vai35/$VARIANT/${VARIANT}_kv260.xmodel"
 if [[ ! -f "$XMODEL" ]]; then
@@ -153,10 +165,17 @@ cat <<EOF
 
 EOF
 
-# Activate the pynq-venv and launch JupyterLab
+# Activate the pynq-venv and launch JupyterLab.
+# --allow-root is needed when run via sudo (Jupyter refuses to start as root
+# by default for safety; the PYNQ-DPU stack requires root for FPGA mmap).
 source "$PYNQ_VENV/bin/activate"
-exec jupyter lab \
-    --no-browser \
-    --ip="$JUPYTER_HOST" \
-    --port="$JUPYTER_PORT" \
+jupyter_args=(
+    --no-browser
+    --ip="$JUPYTER_HOST"
+    --port="$JUPYTER_PORT"
     --notebook-dir="$REPO_ROOT/notebooks"
+)
+if [[ $EUID -eq 0 ]]; then
+    jupyter_args+=( --allow-root )
+fi
+exec jupyter lab "${jupyter_args[@]}"
