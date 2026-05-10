@@ -4,6 +4,7 @@ Public API:
 
     from lpr_pipeline.deploy import (
         ModelRunner, Preprocessor, ThreadedCamera, decode_yolov5u, unletterbox,
+        draw_detections, draw_stats_overlay,
     )
 
 Currently supports the YOLOv5u (anchor-free DFL) family — yolov5n and yolov5s.
@@ -21,6 +22,7 @@ from lpr_pipeline.deploy.preprocess import Preprocessor, unletterbox
 from lpr_pipeline.deploy.decoders   import decode_yolov5u
 from lpr_pipeline.deploy.camera     import ThreadedCamera
 from lpr_pipeline.deploy.runner     import ModelRunner
+from lpr_pipeline.deploy.draw       import draw_detections, draw_stats_overlay
 
 __all__ = [
     "ModelRunner",
@@ -28,4 +30,6 @@ __all__ = [
     "ThreadedCamera",
     "decode_yolov5u",
     "unletterbox",
+    "draw_detections",
+    "draw_stats_overlay",
 ]

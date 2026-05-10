@@ -27,14 +27,21 @@ set -- "${ARGS_REMAINING[@]}"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") <variant>
+Usage: $(basename "$0") <variant> [mode]
 
-Launch a Jupyter server with the live demo notebook (notebooks/02_deploy_live.ipynb)
-configured for the given variant.
+Launch a Jupyter server with one of the live-demo notebooks configured for
+the given variant.
 
 Arguments:
   variant      One of the variants compiled and synced: yolov5n, yolov5s,
                yolox_tiny, yolox_nano.
+  mode         'text' (default) or 'visual'.
+               - text:   02_deploy_text.ipynb   — max-throughput, HTML status
+                                                  block only, no per-frame rendering.
+                                                  Use for benchmarks.
+               - visual: 03_deploy_visual.ipynb — live video preview + bounding
+                                                  boxes + interactive sliders.
+                                                  Use for demos and tuning.
 
 By default Jupyter binds to localhost:8888. Access via SSH tunnel from your
 laptop:
@@ -51,6 +58,16 @@ EOF
 
 [[ $# -lt 1 ]] && usage
 VARIANT="$1"
+MODE="${2:-text}"
+
+case "$MODE" in
+    text)   NOTEBOOK_FILENAME="02_deploy_text.ipynb"   ;;
+    visual) NOTEBOOK_FILENAME="03_deploy_visual.ipynb" ;;
+    *)
+        log_err "Unknown mode: $MODE (expected 'text' or 'visual')"
+        usage
+        ;;
+esac
 
 JUPYTER_PORT="${JUPYTER_PORT:-8888}"
 JUPYTER_HOST="${JUPYTER_HOST:-127.0.0.1}"
@@ -81,37 +98,22 @@ fi
 log_ok "xmodel found: $XMODEL"
 
 # 2. Notebook exists?
-NOTEBOOK="$REPO_ROOT/notebooks/02_deploy_live.ipynb"
+NOTEBOOK="$REPO_ROOT/notebooks/$NOTEBOOK_FILENAME"
 if [[ ! -f "$NOTEBOOK" ]]; then
-    log_warn "Live notebook not found at $NOTEBOOK"
-    log_warn "  This notebook is delivered in Pass 6. For now, falling back to your"
-    log_warn "  existing notebook 09v2 if you have it staged."
-
-    # Search candidates: current $HOME, plus the invoking user's home if running under sudo.
-    # Under `sudo`, $HOME == /root (not the original user's home), so we'd miss notebooks
-    # staged at /home/ubuntu/. SUDO_USER is set by sudo to the invoking username.
-    declare -a search_homes=( "$HOME" )
-    if [[ -n "${SUDO_USER:-}" ]] && [[ "$SUDO_USER" != "root" ]]; then
-        sudo_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
-        if [[ -n "$sudo_home" ]] && [[ "$sudo_home" != "$HOME" ]]; then
-            search_homes+=( "$sudo_home" )
-        fi
-    fi
-
-    fallback=""
-    for h in "${search_homes[@]}"; do
-        fallback=$(find "$h" -maxdepth 3 -name "09*v2*.ipynb" 2>/dev/null | head -1)
-        [[ -n "$fallback" ]] && break
-    done
-
-    if [[ -z "$fallback" ]]; then
-        die "No live notebook found. Stage notebook 09v2 in one of:
-  $(printf '    %s\n' "${search_homes[@]}")
-Or wait for Pass 6's notebooks/02_deploy_live.ipynb."
-    fi
-    NOTEBOOK="$fallback"
-    log_info "Using fallback: $NOTEBOOK"
+    log_err "Notebook not found: $NOTEBOOK"
+    log_err ""
+    log_err "Make sure you've pulled the latest repo. Both notebooks ship in"
+    log_err "Pass 6:"
+    log_err "    notebooks/02_deploy_text.ipynb   (max throughput)"
+    log_err "    notebooks/03_deploy_visual.ipynb (live video + sliders)"
+    log_err ""
+    log_err "From your laptop:"
+    log_err "    git pull origin main"
+    log_err "On the Kria:"
+    log_err "    cd ~/KriaKv260_Model_Compiler && git pull"
+    exit 1
 fi
+log_ok "notebook  : $NOTEBOOK ($MODE mode)"
 
 # 3. Camera available?
 if [[ ! -e /dev/video0 ]]; then

@@ -42,10 +42,16 @@ import numpy as np
 class ThreadedCamera:
     """Background-thread camera reader exposing always-latest frames.
 
-    Construction blocks for up to 1 second waiting for the first frame to
-    arrive — so by the time `__init__` returns, calling `read_new()` is
-    guaranteed to return a valid frame (no need to handle "warming up" in
-    the consumer).
+    Construction blocks for up to `first_frame_timeout_s` (default 3 s) waiting
+    for the first frame to arrive — so by the time `__init__` returns, calling
+    `read_new()` is guaranteed to return a valid frame (no need to handle
+    "warming up" in the consumer).
+
+    Cleanup-on-failure: if `__init__` raises (no camera, no frame, etc.), the
+    V4L2 handle is released and the capture thread is joined before the
+    exception propagates. Without this, a failed construction would leak
+    `/dev/video0` until the Python interpreter exited, blocking subsequent
+    `ThreadedCamera()` attempts and any v4l2-ctl tuning from another shell.
 
     Usage::
 
@@ -73,6 +79,10 @@ class ThreadedCamera:
     buffersize : int
         V4L2 capture buffer count. **Must be ≥4 on this platform** or you'll
         get ~15 fps regardless of other settings.
+    first_frame_timeout_s : float
+        How long to wait for the first frame after the capture thread starts.
+        The Brio takes ~1-2 s to negotiate MJPG mode after a fresh USB
+        enumeration; 3 s is the smallest known-reliable value.
     """
 
     def __init__(self, src=0, width: int = 640, height: int = 480,
@@ -80,14 +90,14 @@ class ThreadedCamera:
                  first_frame_timeout_s: float = 3.0):
         # Initialize state to None/False first so cleanup-on-error knows what
         # to release. Without this, an early failure (e.g., VideoCapture open
-        # succeeds but property set hangs) would leak the cv2 handle and the
-        # thread, holding /dev/video0 forever (until kernel restart).
-        self.cap:     Optional[cv2.VideoCapture]   = None
-        self._thread: Optional[threading.Thread]   = None
-        self._running:                  bool       = False
-        self._frame:  Optional[np.ndarray]         = None
-        self._frame_id:                 int        = 0
-        self._last_seen:                int        = -1
+        # succeeds but a property setter hangs) would leak the cv2 handle and
+        # the thread, holding /dev/video0 forever (until kernel restart).
+        self.cap:        Optional[cv2.VideoCapture] = None
+        self._thread:    Optional[threading.Thread] = None
+        self._running:   bool                       = False
+        self._frame:     Optional[np.ndarray]       = None
+        self._frame_id:  int                        = 0
+        self._last_seen: int                        = -1
         self._lock = threading.Lock()
 
         try:
@@ -111,9 +121,7 @@ class ThreadedCamera:
             self._thread = threading.Thread(target=self._loop, daemon=True)
             self._thread.start()
 
-            # Block waiting for the first frame. The default of 3 seconds
-            # accommodates slow USB-camera mode-switching (the Brio takes ~1-2s
-            # to negotiate MJPG after a recent re-enumeration).
+            # Block waiting for the first frame.
             iters = max(1, int(first_frame_timeout_s / 0.02))
             for _ in range(iters):
                 with self._lock:
@@ -189,7 +197,7 @@ class ThreadedCamera:
         """Stop the background thread and release the camera handle.
 
         Idempotent — safe to call multiple times. Safe to call on a
-        partially-initialized instance (e.g., after __init__ raised).
+        partially-initialized instance (e.g., after `__init__` raised).
         """
         self._running = False
         if self._thread is not None and self._thread.is_alive():
