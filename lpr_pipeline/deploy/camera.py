@@ -76,56 +76,79 @@ class ThreadedCamera:
     """
 
     def __init__(self, src=0, width: int = 640, height: int = 480,
-                 fps: int = 60, buffersize: int = 4):
-        self.cap = cv2.VideoCapture(src, cv2.CAP_V4L2)
-        if not self.cap.isOpened():
-            raise RuntimeError(
-                f"cannot open camera {src!r}. "
-                f"Check: ls -la /dev/video* ; v4l2-ctl --list-devices"
-            )
-
-        # Camera config. Order matters slightly — set codec first so subsequent
-        # property setters know what format we want.
-        self.cap.set(cv2.CAP_PROP_FOURCC,        cv2.VideoWriter_fourcc(*'MJPG'))
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,   width)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT,  height)
-        self.cap.set(cv2.CAP_PROP_FPS,           fps)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE,    buffersize)
-
-        # Frame slot + ID monotonically counting received frames.
-        # `_last_seen` is updated by `read_new()` and tells us when there's
-        # nothing new to read.
-        self._frame:     Optional[np.ndarray] = None
-        self._frame_id:  int = 0
-        self._last_seen: int = -1
+                 fps: int = 60, buffersize: int = 4,
+                 first_frame_timeout_s: float = 3.0):
+        # Initialize state to None/False first so cleanup-on-error knows what
+        # to release. Without this, an early failure (e.g., VideoCapture open
+        # succeeds but property set hangs) would leak the cv2 handle and the
+        # thread, holding /dev/video0 forever (until kernel restart).
+        self.cap:     Optional[cv2.VideoCapture]   = None
+        self._thread: Optional[threading.Thread]   = None
+        self._running:                  bool       = False
+        self._frame:  Optional[np.ndarray]         = None
+        self._frame_id:                 int        = 0
+        self._last_seen:                int        = -1
         self._lock = threading.Lock()
-        self._running = True
 
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
+        try:
+            self.cap = cv2.VideoCapture(src, cv2.CAP_V4L2)
+            if not self.cap.isOpened():
+                raise RuntimeError(
+                    f"cannot open camera {src!r}. "
+                    f"Check: ls -la /dev/video* ; v4l2-ctl --list-devices"
+                )
 
-        # Block up to 1 second waiting for the first frame. Without this, the
-        # first call to read_new() in the consumer's loop returns (None, 0),
-        # and the consumer has to handle that. With it, by the time __init__
-        # returns, read_new() returns a valid frame.
-        for _ in range(50):
-            with self._lock:
-                if self._frame is not None:
-                    break
-            time.sleep(0.02)
-        else:
-            raise RuntimeError(
-                "Camera opened but no frames received in 1s. "
-                "Common: v4l2 settings conflict (re-run scripts/kria/02_apply_tuning.sh); "
-                "permission issue (add user to 'video' group); "
-                "camera busy (pkill -f v4l2)."
-            )
+            # Camera config. Order matters slightly — set codec first so subsequent
+            # property setters know what format we want.
+            self.cap.set(cv2.CAP_PROP_FOURCC,        cv2.VideoWriter_fourcc(*'MJPG'))
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,   width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT,  height)
+            self.cap.set(cv2.CAP_PROP_FPS,           fps)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE,    buffersize)
 
-        # Record actual values (the camera may have negotiated different
-        # numbers than what we requested).
-        self.actual_width  = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.actual_fps    = self.cap.get(cv2.CAP_PROP_FPS)
+            # Start the background capture thread.
+            self._running = True
+            self._thread = threading.Thread(target=self._loop, daemon=True)
+            self._thread.start()
+
+            # Block waiting for the first frame. The default of 3 seconds
+            # accommodates slow USB-camera mode-switching (the Brio takes ~1-2s
+            # to negotiate MJPG after a recent re-enumeration).
+            iters = max(1, int(first_frame_timeout_s / 0.02))
+            for _ in range(iters):
+                with self._lock:
+                    if self._frame is not None:
+                        break
+                time.sleep(0.02)
+            else:
+                raise RuntimeError(
+                    f"Camera opened but no frames received in "
+                    f"{first_frame_timeout_s:.1f}s. Common causes:\n"
+                    f"  - v4l2 settings conflict — re-run "
+                    f"scripts/kria/02_apply_tuning.sh from a shell with the "
+                    f"camera released (e.g., after Kernel → Restart in Jupyter)\n"
+                    f"  - Permission issue — ensure user is in 'video' group\n"
+                    f"  - Camera busy — `sudo fuser /dev/video0` shows who's "
+                    f"holding it; `pkill -f v4l2` to clear stale processes."
+                )
+
+            # Record actual values (the camera may have negotiated different
+            # numbers than what we requested).
+            self.actual_width  = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            self.actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            self.actual_fps    = self.cap.get(cv2.CAP_PROP_FPS)
+
+        except BaseException:
+            # Cleanup on failure: stop the thread, release the V4L2 handle.
+            # Without this, /dev/video0 stays held by this process until the
+            # interpreter exits, blocking subsequent ThreadedCamera() attempts
+            # and any v4l2-ctl tuning from a separate shell.
+            self._running = False
+            if self._thread is not None and self._thread.is_alive():
+                self._thread.join(timeout=1.0)
+            if self.cap is not None:
+                self.cap.release()
+            raise
 
     def _loop(self) -> None:
         """Background loop: drain camera as fast as it delivers."""
@@ -165,12 +188,15 @@ class ThreadedCamera:
     def close(self) -> None:
         """Stop the background thread and release the camera handle.
 
-        Idempotent — safe to call multiple times.
+        Idempotent — safe to call multiple times. Safe to call on a
+        partially-initialized instance (e.g., after __init__ raised).
         """
         self._running = False
-        if self._thread.is_alive():
+        if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=1.0)
-        self.cap.release()
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
 
     def __enter__(self): return self
     def __exit__(self, exc_type, exc_val, exc_tb): self.close()
