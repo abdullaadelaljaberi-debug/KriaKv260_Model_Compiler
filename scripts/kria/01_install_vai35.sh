@@ -44,7 +44,7 @@ VAI35_KR260_ZIP_URL="${VAI35_KR260_ZIP_URL:-https://github.com/Xilinx/Vitis-AI/r
 
 # Kria-PYNQ git repo branch. Pinning to v3.0.1 — current stable as of pipeline writing.
 KRIA_PYNQ_REPO="${KRIA_PYNQ_REPO:-https://github.com/Xilinx/Kria-PYNQ.git}"
-KRIA_PYNQ_BRANCH="${KRIA_PYNQ_BRANCH:-v3.0.1}"
+KRIA_PYNQ_BRANCH="${KRIA_PYNQ_BRANCH:-v3.0}"
 
 # DPU-PYNQ design contest branch — has the VAI 3.5 DPU bitstream
 DPU_PYNQ_REPO="${DPU_PYNQ_REPO:-https://github.com/Xilinx/DPU-PYNQ.git}"
