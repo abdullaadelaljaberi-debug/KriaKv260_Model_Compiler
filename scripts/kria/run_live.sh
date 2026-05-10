@@ -135,9 +135,38 @@ fi
 
 # ─── set environment for the notebook ──────────────────────────────────────
 # The notebook reads $LPR_VARIANT and $LPR_XMODEL to know which model to load
-# without hardcoding paths inside the .ipynb file.
+# without hardcoding paths inside the .ipynb file. $REPO_ROOT helps the
+# notebook find the lpr_pipeline package.
 export LPR_VARIANT="$VARIANT"
 export LPR_XMODEL="$XMODEL"
+export REPO_ROOT="$REPO_ROOT"
+
+# ─── prepare the FPGA: unload starter-kit so PYNQ can program the DPU ──────
+# KV260 boots with `k26-starter-kits` loaded in XRT_FLAT mode. That mode
+# doesn't expose an xclbin-compatible PL, so PYNQ's device enumeration finds
+# nothing and DpuOverlay() raises "No Devices Found".
+#
+# The fix is the standard Kria-PYNQ procedure: unload the starter-kit, then
+# let DpuOverlay program the DPU bitstream into the now-empty PL.
+#
+# If no app is loaded (someone already did this), `xmutil unloadapp` is a
+# harmless no-op.
+if have_cmd xmutil; then
+    current_app=$(sudo xmutil listapps 2>/dev/null \
+                    | awk 'NR>1 && $NF != "" && $NF != "0,"  {print $1; exit}')
+    # Detect specifically the k26-starter-kits in active slot
+    if sudo xmutil listapps 2>/dev/null | grep -q "k26-starter-kits.*XRT_FLAT.*0,"; then
+        log_info "  Unloading k26-starter-kits so PYNQ can program the DPU..."
+        sudo xmutil unloadapp >/dev/null 2>&1 || \
+            log_warn "  xmutil unloadapp returned non-zero (may still work)"
+        log_ok "  starter-kit unloaded; PL ready for DPU bitstream"
+    else
+        log_debug "  no starter-kit loaded — PL is ready"
+    fi
+else
+    log_warn "  xmutil not found — skipping starter-kit unload"
+    log_warn "  If DpuOverlay raises 'No Devices Found', install xrt-tools"
+fi
 
 # ─── launch jupyter ────────────────────────────────────────────────────────
 log_step "Launching JupyterLab"
@@ -168,6 +197,15 @@ EOF
 # Activate the pynq-venv and launch JupyterLab.
 # --allow-root is needed when run via sudo (Jupyter refuses to start as root
 # by default for safety; the PYNQ-DPU stack requires root for FPGA mmap).
+#
+# Source pynq_venv.sh and xrt setup.sh (if present) so the Jupyter kernels
+# inherit the LD_LIBRARY_PATH=/usr/lib patch from Pass 5 Stage 5d, plus any
+# XRT environment vars. AMD's reference workflow uses `sudo su` to get a
+# login shell that loads /etc/profile.d/*.sh automatically; we replicate
+# that by sourcing them explicitly here.
+[[ -f /etc/profile.d/pynq_venv.sh ]] && source /etc/profile.d/pynq_venv.sh
+[[ -f /opt/xilinx/xrt/setup.sh   ]] && source /opt/xilinx/xrt/setup.sh
+
 source "$PYNQ_VENV/bin/activate"
 jupyter_args=(
     --no-browser
