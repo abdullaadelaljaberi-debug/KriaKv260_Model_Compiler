@@ -89,3 +89,18 @@ logs/
 
 # Allow specific zips if explicitly tracked
 !docs/assets/*.zip
+
+
+# Benchmark artifacts (auto-downloaded, not source code)
+notebooks/Models_VAI35/
+notebooks/Datasets/
+notebooks/vai35_*.csv
+notebooks/vai35_*.md
+notebooks/vai35_smoke_test.csv
+
+# Also worth excluding (your existing 2.5 benchmark, if present)
+notebooks/Models/
+notebooks/Dataset/
+notebooks/full_benchmark_results.csv
+notebooks/benchmark_report.md
+notebooks/coco_map_results.csv
