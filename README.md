@@ -11,21 +11,28 @@ and deploys them to the KV260's B4096 DPU for live camera inference.
 ## What this does
 
 ```
-Laptop                              Kria KV260
-──────                              ──────────
-yolov5n.pt (PyTorch)                Live camera + DPU inference
-   │                                          ▲
-   ▼                                          │
-Auto-swap SiLU → LeakyReLU                  Compiled xmodel
-   │                                          │
-   ▼                                          │
-NNDCT quantize (INT8)               ──────────┘
-   │                                rsync over SSH
-   ▼
+Laptop                                            Kria KV260
+──────                                            ──────────
+
+yolov5n.pt (PyTorch)
+      │
+      ▼
+Auto-swap SiLU → LeakyReLU
+      │
+      ▼
+NNDCT quantize (INT8)
+      │
+      ▼
 vai_c_xir compile
-   │
-   ▼
-yolov5n_kv260.xmodel ───────────────┐
+      │
+      ▼
+yolov5n_kv260.xmodel ───── rsync over SSH ─────►  /home/ubuntu/xmodels_vai35/
+                                                          │
+                                                          ▼
+                                                  DpuOverlay + ModelRunner
+                                                          │
+                                                          ▼
+                                                  Live camera + DPU inference
 ```
 
 Tested with:
@@ -112,7 +119,11 @@ the weights at the expected path, run `scripts/host/01_compile.sh`. See
 
 ## License
 
-(Whatever your existing README states.)
+Apache License 2.0 — see [LICENSE](LICENSE) for the full text.
+
+In short: you can use, modify, and distribute this code freely, including
+in commercial work, as long as you preserve the copyright notice and the
+license file. If you modify the code, mark the files you changed.
 
 ## Acknowledgments
 
