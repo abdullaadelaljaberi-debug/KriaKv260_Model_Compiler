@@ -1,115 +1,123 @@
-# KriaKv260_Model_Compiler
+# Kria KV260 Model Compiler
 
-End-to-end pipeline for compiling object-detection models into Vitis-AI 3.5
-xmodels and deploying them to a Xilinx Kria KV260 board.
+License plate recognition pipeline targeting the AMD Kria KV260 SOM.
+Compiles PyTorch YOLOv5 models on a laptop (Vitis AI 3.5 NNDCT toolchain)
+and deploys them to the KV260's B4096 DPU for live camera inference.
 
-Built around the Logitech Brio USB camera, with a hook for AR1335 (J7) support
-to be added later.
+> *This is a working thesis project, not a polished library — but the
+> pipeline reproducibly hits **60 fps live with ~12 ms per frame** on
+> yolov5n.*
+
+## What this does
 
 ```
-┌──────────────────────┐         ┌──────────────────────┐
-│   Host PC (NVIDIA)   │  scp    │      Kria KV260      │
-│                      │  ────>  │                      │
-│  • PyTorch weights   │         │  • DPU bitstream     │
-│  • Vitis-AI 3.5      │ xmodel  │  • PYNQ + VART 3.5   │
-│    quantize+compile  │         │  • Camera + display  │
-└──────────────────────┘         └──────────────────────┘
-       (Pass 2-4)                       (Pass 5-6)
+Laptop                              Kria KV260
+──────                              ──────────
+yolov5n.pt (PyTorch)                Live camera + DPU inference
+   │                                          ▲
+   ▼                                          │
+Auto-swap SiLU → LeakyReLU                  Compiled xmodel
+   │                                          │
+   ▼                                          │
+NNDCT quantize (INT8)               ──────────┘
+   │                                rsync over SSH
+   ▼
+vai_c_xir compile
+   │
+   ▼
+yolov5n_kv260.xmodel ───────────────┐
 ```
 
-## Status
-
-This is a thesis-companion pipeline. v1 ships:
-
-- **Full pipeline support** for **YOLOv5** (Ultralytics u-variant) — proven
-  on KV260 at 60 fps live with `yolov5n` license-plate detection
-- **Full pipeline support** for **YOLOX** (Megvii) — multi-DPU-subgraph,
-  uses `vitis_ai_library.GraphRunner`
-- **Skeleton** support for **YOLOv7**, **YOLOv4-CSP**, **SSD-MobileNetV2-TF**
-  — directory structure + class scaffolds in place; family-specific compile
-  logic to be filled in later
+Tested with:
+- **Hardware**: Kria KV260 Vision AI Starter Kit + Logitech Brio
+- **Host**: Ubuntu 20.04, Vitis AI 3.5 Docker
+- **Board**: Ubuntu 22.04 LTS + Kria-PYNQ 3.0 + Vitis AI 3.5 runtime
+- **Target task**: single-class license plate detection (extensible to
+  multi-class via the model spec registry)
 
 ## Quick start
 
-### One-time host setup
+If you already have a Kria with our scripts installed:
 
 ```bash
-git clone https://github.com/abdullaadelaljaberi-debug/KriaKv260_Model_Compiler.git
-cd KriaKv260_Model_Compiler
-bash scripts/host/00_check_prereqs.sh        # verify docker, nvidia, etc.
-bash scripts/host/01_install_vai.sh           # pull Vitis-AI 3.5 docker
-bash scripts/host/download_weights.sh         # pull pretrained LPR weights
+# Laptop: compile + sync
+bash scripts/host/01_compile.sh yolov5n
+bash scripts/host/03_sync_to_kria.sh ubuntu@<kria-ip> yolov5n
+
+# Kria: run live
+sudo bash scripts/kria/run_live.sh yolov5n visual
 ```
 
-See [`docs/HOST_SETUP.md`](docs/HOST_SETUP.md) for the full host install.
+Then open the URL the script prints in your laptop's browser.
 
-### One-time Kria setup
-
-The Kria install is **wide scope**: it includes flashing the SD card from the
-host PC. See [`docs/KRIA_SETUP.md`](docs/KRIA_SETUP.md).
-
-### Compile a model
-
-```bash
-bash scripts/host/02_compile.sh yolov5 yolov5n \
-     data/weights/yolov5n_lpr.pt \
-     data/calib/ \
-     out/yolov5n_kv260.xmodel
-```
-
-### Deploy to Kria
-
-```bash
-bash scripts/host/03_sync_to_kria.sh ubuntu@10.42.0.27 yolov5n
-ssh ubuntu@10.42.0.27 'bash KriaKv260_Model_Compiler/scripts/kria/run_live.sh yolov5n'
-```
-
-See [`docs/USAGE.md`](docs/USAGE.md) for the full day-to-day workflow.
-
-## Repository layout
-
-```
-KriaKv260_Model_Compiler/
-├── docs/             Markdown documentation (host setup, Kria setup, usage, models)
-├── notebooks/        Jupyter notebooks — visible workflow for thesis demo
-├── scripts/host/     Bash helpers run on the development PC
-├── scripts/kria/     Bash helpers run on the KV260 board
-├── lpr_pipeline/     Python package — shared compile/deploy logic
-├── data/             User data (weights, calibration images, eval images) — gitignored
-└── tests/            Smoke tests (minimal in v1)
-```
+If you're starting from a fresh Kria SD card, see
+[**docs/KRIA_SETUP.md**](docs/KRIA_SETUP.md).
 
 ## Documentation
 
-- [`docs/HOST_SETUP.md`](docs/HOST_SETUP.md) — one-time setup of the host PC (Docker, NVIDIA Container Toolkit, Vitis-AI image)
-- [`docs/KRIA_SETUP.md`](docs/KRIA_SETUP.md) — one-time setup of the Kria board (SD flash, PYNQ, VAI 3.5 stack, camera)
-- [`docs/USAGE.md`](docs/USAGE.md) — daily workflow (compile, deploy, demo, eval)
-- [`docs/MODELS.md`](docs/MODELS.md) — supported model families, variants, conventions
+| Doc | When to read |
+|---|---|
+| [**docs/KRIA_SETUP.md**](docs/KRIA_SETUP.md) | One-time install on a fresh SD card |
+| [**docs/USAGE.md**](docs/USAGE.md) | Daily workflow + adding new variants/families |
+| [**docs/TROUBLESHOOTING.md**](docs/TROUBLESHOOTING.md) | Every issue we've hit, with forensic detail |
+
+## Performance (as of `v0.6-pass6-validated`, 2026-05)
+
+| Metric | Value |
+|---|---|
+| Pure DPU inference (yolov5n, imgsz=320) | 7.74 ms / 129 fps |
+| End-to-end pipeline (pre + DPU + decode) | 12.38 ms / 80 fps |
+| Live camera throughput | 59.87 fps |
+| Hit rate (60 s LPR run) | 18.98% across 3620 frames |
+
+Camera-bound at 60 fps; DPU has ~30% spare capacity on yolov5n. See
+[KRIA_SETUP.md §11](docs/KRIA_SETUP.md#11-validated-performance) for
+full per-stage breakdown.
+
+## Repo layout
+
+```
+scripts/
+  host/                # laptop-side: compile + sync
+  kria/                # board-side: install + tune + run
+
+lpr_pipeline/
+  shared/models.py     # ModelSpec registry (yolov5n, yolov5s, yolox_*)
+  compile/             # host-only: PyTorch → ONNX → quantize → xmodel
+  deploy/              # board-only: xmodel → live detections
+
+notebooks/
+  01_compile.ipynb         # optional walk-through of the compile pipeline
+  02_deploy_text.ipynb     # max-throughput text-mode live demo
+  03_deploy_visual.ipynb   # visual live demo with bounding boxes + sliders
+
+docs/                  # this directory
+```
+
+See [USAGE.md §12](docs/USAGE.md#12-whats-where) for a fuller tour.
+
+## Supported models
+
+| Variant | Status | DPU latency (ms) | Notes |
+|---|---|---|---|
+| yolov5n | ✓ validated end-to-end | 7.74 | Recommended for camera-bound demos |
+| yolov5s | ✓ compiles + runs | ~15-20 (est.) | Not yet benchmarked live |
+| yolox_tiny | spec only | — | Decoder + runner branch not yet implemented |
+| yolox_nano | spec only | — | Same |
+
+Adding a new YOLOv5 variant: edit
+[`lpr_pipeline/shared/models.py`](lpr_pipeline/shared/models.py), drop
+the weights at the expected path, run `scripts/host/01_compile.sh`. See
+[USAGE.md §10](docs/USAGE.md#10-deep-dive-adding-a-new-yolov5-variant).
 
 ## License
 
-Apache 2.0 — see [`LICENSE`](LICENSE).
+(Whatever your existing README states.)
 
-Compatible with AMD/Xilinx Vitis-AI (also Apache 2.0). Suitable for
-academic, research, and commercial use; includes patent grant.
+## Acknowledgments
 
-## Hardware tested
-
-- AMD Xilinx Kria KV260 Vision AI Starter Kit
-- Logitech Brio (USB 3.0)
-- Host PC: x86_64 Linux (Ubuntu 22.04 / 24.04), NVIDIA GPU with CUDA 11.x
-
-## Citation
-
-If this pipeline supports your research, please cite the underlying frameworks:
-
-```
-@article{vitis_ai,
-  title  = {Vitis AI},
-  author = {Advanced Micro Devices, Inc.},
-  url    = {https://github.com/Xilinx/Vitis-AI},
-  year   = {2023}
-}
-```
-
-(Replace with your thesis citation once published.)
+Built on top of AMD/Xilinx's [Kria-PYNQ](https://github.com/Xilinx/Kria-PYNQ),
+[DPU-PYNQ](https://github.com/Xilinx/DPU-PYNQ), and
+[Kria-RoboticsAI](https://github.com/amd/Kria-RoboticsAI). The Vitis AI 3.5
+upgrade procedure is adapted from AMD's reference scripts; documented in
+detail in [KRIA_SETUP.md](docs/KRIA_SETUP.md).
