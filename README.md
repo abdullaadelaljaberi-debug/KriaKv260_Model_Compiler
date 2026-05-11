@@ -81,7 +81,6 @@ If you're starting from a fresh Kria SD card, see
 | Pure DPU inference (yolov5n, imgsz=320) | 7.74 ms / 129 fps |
 | End-to-end pipeline (pre + DPU + decode) | 12.38 ms / 80 fps |
 | Live camera throughput | 59.87 fps |
-| Hit rate (60 s LPR run) | 18.98% across 3620 frames |
 
 Camera-bound at 60 fps; DPU has ~30% spare capacity on yolov5n. See
 [KRIA_SETUP.md §11](docs/KRIA_SETUP.md#11-validated-performance) for
