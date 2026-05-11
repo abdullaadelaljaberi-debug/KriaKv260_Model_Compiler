@@ -955,3 +955,104 @@ the labels.txt format. The staging script generates labels.txt from
 ImageNetV2's directory structure (where directory name IS the class
 index), so this shouldn't happen if you used the host script. If it does,
 your `labels.txt` may have been manually edited — re-run staging.
+
+## VAI 3.5 install reports "Current VAI version: 3.5. Upgrading to 3.5." then fails
+
+**Symptom**: Re-running `scripts/kria/01_install_vai35.sh` on a Kria where
+VAI 3.5 is *already correctly installed* (verified via `dpkg -l libvart`
+showing `3.5.0-1`), stage 4 reports it's about to "upgrade" and then
+fails downloading from xilinx.com:
+
+```
+━━ [4/5] VAI 3.5 runtime upgrade
+[*] Current VAI version: 3.5. Upgrading to 3.5.
+[*]   Downloading from https://www.xilinx.com/bin/public/openDownload?filename=vai3.5_kr260.zip
+ERROR: cannot verify www.xilinx.com's certificate, issued by 'CN=R13,O=Let's Encrypt,C=US':
+  Unable to locally verify the issuer's authority.
+[FAIL] Download failed.
+```
+
+### Two stacked issues
+
+**Issue 1**: The stage 4 idempotency check requires *both* the installed
+version to be 3.5 *and* the stamp file `/var/local/kriakv260_vai35.done`
+to exist. On a Kria where VAI 3.5 was installed via some prior path that
+didn't write the stamp, the check fails despite the runtime being correct,
+and the script proceeds to "upgrade VAI 3.5 → VAI 3.5".
+
+**Issue 2**: Once it gets to the download, `wget` on some Kria images
+doesn't pick up the system CA bundle automatically, causing SSL
+verification to fail on xilinx.com's Let's Encrypt R-series intermediate
+certificates — even though `ca-certificates` is properly installed.
+
+### Detection
+
+Confirm VAI 3.5 is actually correctly installed:
+
+```bash
+# Runtime packages
+dpkg -l 2>/dev/null | grep -E '^ii\s+(libvart|libxir|libvitis-ai-library|libtarget-factory)' \
+    | awk '{print $2, $3}'
+# All four should print version 3.5.0-1
+```
+
+Confirm DPU programming works:
+
+```bash
+sudo XILINX_XRT=/usr LD_LIBRARY_PATH=/usr/lib \
+    /usr/local/share/pynq-venv/bin/python3 -c "
+import subprocess
+subprocess.run(['xmutil', 'unloadapp'], capture_output=True)
+from pynq_dpu import DpuOverlay
+DpuOverlay('dpu.bit')
+print('OK — VAI 3.5 functional')
+"
+```
+
+If both succeed, your VAI 3.5 install is fine; the script was wrongly
+trying to "upgrade" it.
+
+### Fix (immediate — for a system that's already in this state)
+
+```bash
+sudo touch /var/local/kriakv260_vai35.done
+bash scripts/kria/01_install_vai35.sh
+```
+
+The stamp file unblocks the idempotency check. The re-run should now
+show stages 4 and 5 as `↷ SKIPPED`.
+
+### Fix (permanent — patched in v0.7.1)
+
+The install script was patched to:
+
+1. **Detect when current VAI version equals the target (3.5)** and write
+   the stamp if missing, instead of requiring both conditions before
+   skipping. The version match is sufficient evidence of a correct
+   install; the stamp can be regenerated.
+
+2. **Pass `--ca-directory=/etc/ssl/certs` to wget** so it uses the system
+   CA bundle reliably, fixing the Let's Encrypt R13 cert verification
+   failure on Kria images where wget doesn't auto-pick the default CA dir.
+
+3. **Print clearer diagnostics** distinguishing "stamp missing but
+   runtime present" from "runtime genuinely needs install".
+
+### Workaround if you can't update the script (older Kria with restricted network)
+
+Download the zip on your laptop (where SSL works) and scp to the Kria:
+
+```bash
+# On laptop
+wget --ca-directory=/etc/ssl/certs \
+    "https://www.xilinx.com/bin/public/openDownload?filename=vai3.5_kr260.zip" \
+    -O vai3.5_kr260.zip
+scp vai3.5_kr260.zip ubuntu@<kria-ip>:/tmp/
+
+# On Kria: pre-populate the script's staging directory so it doesn't try to download
+sudo mkdir -p /home/ubuntu/.cache/kriakv260_install
+sudo cp /tmp/vai3.5_kr260.zip /home/ubuntu/.cache/kriakv260_install/
+
+# Re-run — the script detects the existing zip and skips the wget
+bash scripts/kria/01_install_vai35.sh
+```

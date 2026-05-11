@@ -224,7 +224,19 @@ summary_stage_start "4/5" "VAI 3.5 runtime upgrade"
 vai_v=$(vai_installed_version)
 VAI35_STAMP="/var/local/kriakv260_vai35.done"
 
-if [[ "$vai_v" == "3.5" ]] && [[ -f "$VAI35_STAMP" ]]; then
+if [[ "$vai_v" == "3.5" ]]; then
+    # VAI 3.5 runtime libs are already installed. If the stamp file is
+    # missing (e.g., VAI 3.5 was installed via a different path before this
+    # script existed, or a prior run completed the install but failed before
+    # stamping), the stamp must be written here so subsequent runs skip
+    # cleanly without re-attempting the download. Without this, the script
+    # would fall into the else branch and try to "upgrade VAI 3.5 → VAI 3.5",
+    # which is wasted work and can fail spuriously on SSL/network issues.
+    if [[ ! -f "$VAI35_STAMP" ]]; then
+        log_info "VAI 3.5 runtime detected (libvart $vai_v) but stamp missing."
+        log_info "  Verified install is at target version — marking stage done."
+        need_sudo touch "$VAI35_STAMP"
+    fi
     log_ok "VAI 3.5 already installed and patched — skipping upgrade"
     summary_stage_skipped "VAI 3.5 + stamp present"
 else
@@ -241,7 +253,12 @@ else
         log_ok "  $ZIP_PATH already downloaded and valid"
     else
         log_info "  Downloading from $VAI35_KR260_ZIP_URL"
-        if ! wget --show-progress -O "$ZIP_PATH" "$VAI35_KR260_ZIP_URL"; then
+        # --ca-directory=/etc/ssl/certs ensures wget uses the system CA
+        # bundle (xilinx.com's Let's Encrypt cert chain isn't picked up
+        # automatically by wget on some Kria images, despite the
+        # ca-certificates package being correct).
+        if ! wget --ca-directory=/etc/ssl/certs --show-progress \
+                  -O "$ZIP_PATH" "$VAI35_KR260_ZIP_URL"; then
             die "Download failed. URL may have changed. Override with:
   VAI35_KR260_ZIP_URL=<new_url> bash scripts/kria/01_install_vai35.sh"
         fi
