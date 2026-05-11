@@ -11,28 +11,24 @@ and deploys them to the KV260's B4096 DPU for live camera inference.
 ## What this does
 
 ```
-Laptop                                            Kria KV260
-──────                                            ──────────
+Laptop                                                  Kria KV260
+──────                                                  ──────────
 
 yolov5n.pt (PyTorch)
       │
       ▼
 Auto-swap SiLU → LeakyReLU
       │
-      ▼
-NNDCT quantize (INT8)
-      │
-      ▼
-vai_c_xir compile
-      │
-      ▼
+      ▼                                                      
+NNDCT quantize (INT8)                              Live camera + DPU inference
+      │                                                      ▲
+      ▼                                                      │
+vai_c_xir compile                                  DpuOverlay + ModelRunner
+      │                                                      ▲
+      ▼                                                      │
 yolov5n_kv260.xmodel ───── rsync over SSH ─────►  /home/ubuntu/xmodels_vai35/
-                                                          │
-                                                          ▼
-                                                  DpuOverlay + ModelRunner
-                                                          │
-                                                          ▼
-                                                  Live camera + DPU inference
+
+
 ```
 
 Tested with:
