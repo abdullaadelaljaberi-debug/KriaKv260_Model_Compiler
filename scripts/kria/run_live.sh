@@ -43,15 +43,19 @@ Arguments:
                                                   boxes + interactive sliders.
                                                   Use for demos and tuning.
 
-By default Jupyter binds to localhost:8888. Access via SSH tunnel from your
-laptop:
+By default Jupyter binds to 0.0.0.0:8888 — reachable from any device on
+your LAN. Open the URL Jupyter prints (it includes a single-use token) in
+your laptop's browser, replacing 'localhost' with the Kria's IP.
 
-  ssh -L 8888:localhost:8888 $USER@<this-board's-ip>
-  # then on your laptop, browse http://localhost:8888
+To restrict access to the Kria itself (requires an SSH tunnel from your
+laptop to reach it), set:
+
+  JUPYTER_HOST=127.0.0.1 sudo -E bash $(basename "$0") <variant>
 
 Environment overrides:
   JUPYTER_PORT  Port to bind to (default: 8888)
-  JUPYTER_HOST  Bind address (default: 127.0.0.1; set to 0.0.0.0 for network access)
+  JUPYTER_HOST  Bind address (default: 0.0.0.0; set to 127.0.0.1 for
+                localhost-only access requiring an SSH tunnel)
 EOF
     exit 2
 }
@@ -70,7 +74,10 @@ case "$MODE" in
 esac
 
 JUPYTER_PORT="${JUPYTER_PORT:-8888}"
-JUPYTER_HOST="${JUPYTER_HOST:-127.0.0.1}"
+# Default to 0.0.0.0 (LAN-accessible) since this is the thesis workflow:
+# you reach Jupyter from your laptop's browser directly, no SSH tunnel.
+# Set JUPYTER_HOST=127.0.0.1 to revert to localhost-only (requires a tunnel).
+JUPYTER_HOST="${JUPYTER_HOST:-0.0.0.0}"
 
 # ─── prereqs ───────────────────────────────────────────────────────────────
 log_step "Live demo: $VARIANT"
@@ -177,12 +184,42 @@ log_info "  bind    : $JUPYTER_HOST"
 log_info "  variant : $VARIANT"
 log_info "  notebook: $NOTEBOOK"
 
-cat <<EOF
+# Discover the Kria's primary LAN IP so we can print a copy-pasteable URL.
+# `hostname -I` returns space-separated IPv4 addresses across all interfaces;
+# the first is typically the LAN address. Falls back to '<kria-ip>' as a
+# literal placeholder if discovery fails.
+KRIA_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+[[ -z "$KRIA_IP" ]] && KRIA_IP="<kria-ip>"
+
+if [[ "$JUPYTER_HOST" == "0.0.0.0" ]]; then
+    # LAN-bound: browser hits the Kria directly.
+    cat <<EOF
+
+  ┌─ Open this in your laptop's browser ─────────────────────
+  │
+  │   Once Jupyter prints its URL below (with the token),
+  │   replace 'localhost' or '127.0.0.1' with the Kria's IP:
+  │
+  │      http://$KRIA_IP:$JUPYTER_PORT/lab?token=<copy-from-below>
+  │
+  │   The notebook's first cell reads LPR_VARIANT='$VARIANT'
+  │   and LPR_XMODEL from the environment — just Run All.
+  │
+  │   Ctrl-C twice to stop Jupyter.
+  │
+  └──────────────────────────────────────────────────────────
+
+EOF
+else
+    # Localhost-only: user needs an SSH tunnel.
+    cat <<EOF
 
   ┌─ Access this notebook from your laptop ──────────────────
   │
+  │   (JUPYTER_HOST=$JUPYTER_HOST → localhost-only, tunnel required)
+  │
   │   1. SSH-tunnel on your laptop (replace IP):
-  │        ssh -L $JUPYTER_PORT:localhost:$JUPYTER_PORT $USER@<kria-ip>
+  │        ssh -L $JUPYTER_PORT:localhost:$JUPYTER_PORT $USER@$KRIA_IP
   │
   │   2. Open the URL Jupyter prints below (with the token)
   │      in your laptop's browser.
@@ -195,6 +232,7 @@ cat <<EOF
   └──────────────────────────────────────────────────────────
 
 EOF
+fi
 
 # Activate the pynq-venv and launch JupyterLab.
 # --allow-root is needed when run via sudo (Jupyter refuses to start as root
