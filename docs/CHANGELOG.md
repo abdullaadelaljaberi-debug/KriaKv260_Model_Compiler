@@ -1,3 +1,66 @@
+# Changelog
+
+## v0.7 — VAI 3.5 benchmark + SD-card hardening (2026-05-11)
+
+### Added
+
+- **`scripts/host/04_stage_benchmark.sh`** — host-side staging wrapper
+  for the VAI 3.5 model zoo benchmark. Downloads ~12 GB (34 models +
+  COCO val2017 + VOC2007 test + ImageNetV2) into `build/benchmark_stage/`.
+- **`scripts/host/_stage_benchmark.py`** — hardened Python downloader:
+  fsync every 16 MB, atomic `.part` → final rename with directory fsync,
+  HTTP Range resume support, size verification, atomic state log,
+  certifi-first SSL with unverified fallback.
+- **`scripts/host/05_sync_benchmark_to_kria.sh`** — rsync wrapper that
+  pushes staged data to the Kria. Mirrors the SSH-key-auth pattern from
+  `03_sync_to_kria.sh`. Includes pre-flight remote disk check and
+  post-sync verification (spot-checks for xmodels and dataset annotations).
+- **`notebooks/04_vai35_benchmark.ipynb`** — VAI 3.5 model zoo benchmark
+  notebook. Reads pre-staged data; does NO downloads. 33 cells covering:
+  catalogue load, prerequisite check, smoke test, main 5-criteria
+  benchmark, COCO mAP loop, VOC mAP loop, combined markdown report.
+- **`docs/USAGE.md` §13** — documents the VAI 3.5 benchmark workflow.
+- **`docs/TROUBLESHOOTING.md`** — new section on benchmark-workflow issues
+  (SSL, permission, disk space, SD-card corruption recovery).
+- **`docs/CHANGELOG.md`** — this file (was `CHANGELOG_pass6_final.md`
+  in the repo root).
+
+### Changed
+
+- **All docs**: `scripts/host/01_compile.sh` references corrected to
+  `scripts/host/02_compile.sh` (the actual script name).
+- **`README.md`**: explicit `git clone https://github.com/abdullaadelaljaberi-debug/KriaKv260_Model_Compiler.git`
+  URL added to the Quick start.
+- **`docs/HOST_SETUP.md`**: GitHub URL placeholder corrected; disk space
+  notes updated to include the benchmark workflow's 15 GB requirement.
+- **`docs/KRIA_SETUP.md`**: GitHub URL placeholder `<your-username>`
+  replaced with the actual repo URL.
+
+### Removed
+
+- **`APPLY_INSTRUCTIONS.md`** — one-time tarball-apply instructions from
+  Pass 5 + 6 delivery; no longer relevant.
+- **`tests/`** and **`docs/img/`** empty directories.
+
+### Why
+
+The previous in-notebook auto-download for the VAI 3.5 benchmark
+corrupted a 256 GB SD card on the Kria under sustained writes. Consumer
+SD card controllers handle sustained heavy I/O badly, and the corruption
+window from the kernel write-back cache was too wide. Moved all
+downloads to the laptop SSD, which is properly built for this load,
+and reduced the Kria's role to a single rsync receive + read-only access
+during the benchmark run.
+
+The hardening primitives in `_stage_benchmark.py` (fsync, atomic rename,
+resume, size verification) are now redundant on the host PC's SSD but
+were preserved because they're cheap and harmless — if anyone ever runs
+the staging on a flakier filesystem, they're covered.
+
+---
+
+## v0.6 — Pass 5 + Pass 6 final (Apr 2026)
+
 # Pass 5 + Pass 6 final consolidation
 
 This drop consolidates everything that was iteratively patched across Pass 5

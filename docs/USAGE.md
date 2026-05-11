@@ -60,7 +60,7 @@ Once everything is set up, the day-to-day workflow is:
 ```bash
 # 1. On laptop: maybe edit training/compile config, retrain, etc.
 # Then compile:
-bash scripts/host/01_compile.sh yolov5n
+bash scripts/host/02_compile.sh yolov5 yolov5n data/weights/yolov5n_lpr.pt data/calib/
 
 # 2. On laptop: sync the new xmodel to the Kria
 bash scripts/host/03_sync_to_kria.sh ubuntu@10.42.0.27 yolov5n
@@ -78,7 +78,7 @@ auto-discovered and printed in the launch banner.
 ## 3. Compiling a model (laptop side)
 
 ```bash
-bash scripts/host/01_compile.sh <variant>
+bash scripts/host/02_compile.sh <family> <variant> <weights.pt> <calib_dir>
 ```
 
 Where `<variant>` is one of the entries in
@@ -302,7 +302,7 @@ Put the trained `.pt` at `models/yolov5m/training/weights/best.pt`.
 ### 10.3 Compile
 
 ```bash
-bash scripts/host/01_compile.sh yolov5m
+bash scripts/host/02_compile.sh yolov5 yolov5m data/weights/yolov5m_lpr.pt data/calib/
 ```
 
 The pipeline will:
@@ -375,7 +375,7 @@ one at a time without breaking the YOLOv5 path.
 ```
 scripts/
   host/                     ← laptop-side workflow
-    01_compile.sh           ← .pt → xmodel
+    02_compile.sh           ← .pt → xmodel
     03_sync_to_kria.sh      ← rsync xmodel to board
   kria/                     ← board-side workflow
     01_install_vai35.sh     ← one-time install (Pass 5)
@@ -420,3 +420,140 @@ data/                       ← calibration + eval images (not git-tracked)
 When something specific breaks, [TROUBLESHOOTING.md](./TROUBLESHOOTING.md)
 has the deep forensic detail on every issue we've encountered during
 development.
+
+## 13. VAI 3.5 model zoo benchmark
+
+A separate workflow from the LPR pipeline above: benchmarks AMD's
+pre-compiled VAI 3.0 KV260 model binaries (34 classification + detection
+models) against COCO val2017, VOC2007 test, and ImageNetV2. Useful for
+thesis comparison numbers ("how does our LPR-tuned yolov5n compare to
+the stock model zoo on standard benchmarks?").
+
+### Why this workflow is host-driven
+
+The benchmark needs ~12 GB of downloads (models + datasets). An earlier
+version did the downloads on the Kria itself, which corrupted a 256 GB
+SD card under sustained writes. Consumer SD card controllers handle
+sustained heavy I/O badly. The current workflow does all downloads on
+the laptop's SSD instead and pushes the result to the Kria via rsync.
+
+### One-time setup
+
+```bash
+# On laptop — ~60 min of mostly download time
+cd ~/Documents/Girona_Masters/Thesis/KriaKv260_Model_Compiler
+
+bash scripts/host/04_stage_benchmark.sh
+```
+
+This downloads:
+- ~9 GB of VAI 3.0 pre-compiled KV260 xmodels (34 models)
+- ~1.3 GB ImageNetV2 (10,000 labeled images, MIT licensed)
+- ~1.0 GB COCO val2017 (images + annotations)
+- ~430 MB VOC2007 test set
+
+Output: `build/benchmark_stage/`. The `build/` directory is gitignored.
+
+The script:
+- Refuses to start unless ≥15 GB free disk
+- Uses fsync after every 16 MB to bound data loss on crashes
+- Resumes interrupted downloads via HTTP Range
+- Verifies download sizes
+- Falls back to unverified SSL if the system CA bundle is incomplete
+
+Interrupt with Ctrl-C and re-run to resume — completed items skip.
+
+### Push to the Kria
+
+```bash
+# Still on laptop
+bash scripts/host/05_sync_benchmark_to_kria.sh ubuntu@10.42.0.27
+```
+
+This rsyncs the staged data to
+`/home/ubuntu/KriaKv260_Model_Compiler/notebooks/`. The script:
+- Sets up SSH key auth on first run (one password prompt)
+- Pre-flight checks remote disk space
+- Uses `rsync --inplace --partial` (resumable)
+- Spot-checks key files on the remote after completion
+- Excludes intermediate cache dirs (`_downloads/`, the extracted source
+  tree for ImageNetV2 — only the symlinked staging dir is synced)
+
+Add `--dry-run` to preview without transferring:
+
+```bash
+bash scripts/host/05_sync_benchmark_to_kria.sh ubuntu@10.42.0.27 --dry-run
+```
+
+### Run the benchmark on the Kria
+
+```bash
+# On Kria
+sudo bash scripts/kria/run_live.sh yolov5n
+# (variant doesn't matter; we just need Jupyter + DPU access)
+```
+
+Then in your laptop's browser, open `notebooks/04_vai35_benchmark.ipynb`
+and run cells top to bottom.
+
+The notebook:
+1. Verifies prerequisites (the data you just rsync'd is in place)
+2. Loads the model catalogue (34 entries)
+3. Smoke-tests each model (1 inference) — excludes broken ones from full run
+4. Runs the 5-criteria benchmark (DPU FPS, latency, power, accuracy, camera FPS)
+5. Computes COCO mAP for detection models on val2017
+6. Computes VOC mAP for VOC-trained models on VOC2007 test
+7. Generates a combined markdown report
+
+CSV outputs (gitignored):
+- `vai35_smoke_test.csv` — which models pass the smoke test
+- `vai35_benchmark_results.csv` — main 5-criteria results
+- `vai35_coco_map_results.csv` — COCO mAP per model
+- `vai35_voc_map_results.csv` — VOC mAP per model
+- `vai35_benchmark_report.md` — combined markdown report
+
+Full benchmark run takes ~3-5 hours depending on how many models pass
+the smoke test.
+
+### Re-running with updated data
+
+If you need to refresh datasets or models on the Kria:
+
+```bash
+# Laptop: re-download (will skip what's already there)
+bash scripts/host/04_stage_benchmark.sh
+
+# Laptop: re-sync (rsync only transfers changed files)
+bash scripts/host/05_sync_benchmark_to_kria.sh ubuntu@10.42.0.27
+```
+
+Both scripts are fully idempotent — running them on a clean system or
+on a fully-staged system both behave correctly.
+
+### Re-running with subset
+
+To download only a specific model (e.g. when iterating on the catalogue):
+
+```bash
+bash scripts/host/04_stage_benchmark.sh --only resnet50
+```
+
+To skip the models or datasets:
+
+```bash
+bash scripts/host/04_stage_benchmark.sh --skip-datasets
+bash scripts/host/04_stage_benchmark.sh --skip-models
+```
+
+### Where things end up
+
+| Path on laptop | Path on Kria | Contents |
+|---|---|---|
+| `build/benchmark_stage/Models_VAI35/` | `notebooks/Models_VAI35/` | 34 model directories |
+| `build/benchmark_stage/Datasets/imagenet_sample/` | `notebooks/Datasets/imagenet_sample/` | 10K symlinked images + labels.txt |
+| `build/benchmark_stage/Datasets/coco_val2017/` | `notebooks/Datasets/coco_val2017/` | 5K COCO images + annotations |
+| `build/benchmark_stage/Datasets/voc2007_test/` | `notebooks/Datasets/voc2007_test/` | 5K VOC images + annotations |
+| `build/benchmark_stage/Datasets/imagenet_class_index.json` | (same path on Kria) | ImageNet 1000-class taxonomy |
+
+The `notebooks/Models_VAI35/` and `notebooks/Datasets/` directories on
+the Kria are gitignored — they exist only after the sync.

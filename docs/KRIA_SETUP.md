@@ -30,7 +30,7 @@ After completing this guide, the Kria will:
 
 - Boot Ubuntu 22.04 LTS with Kria-PYNQ and Vitis AI 3.5 runtime installed
 - Have a tuned USB camera at 60 fps MJPG
-- Run any xmodel compiled by this repo's `host/01_compile.sh` pipeline
+- Run any xmodel compiled by this repo's `host/02_compile.sh` pipeline
 - Expose JupyterLab on the LAN at port 8888 for browser access from your
   laptop
 - Persist all runtime tuning across reboots via a systemd unit
@@ -153,7 +153,7 @@ On the Kria:
 
 ```bash
 cd ~
-git clone https://github.com/<your-username>/KriaKv260_Model_Compiler.git
+git clone https://github.com/abdullaadelaljaberi-debug/KriaKv260_Model_Compiler.git
 cd KriaKv260_Model_Compiler
 ```
 
@@ -312,7 +312,7 @@ sudo systemctl status kriakv260-tuning.service
 
 ## 8. Sync a compiled xmodel from your laptop
 
-On the laptop side, you compile an xmodel using `scripts/host/01_compile.sh`
+On the laptop side, you compile an xmodel using `scripts/host/02_compile.sh`
 (see [USAGE.md](./USAGE.md#compiling-a-model) for that side of the
 workflow). Then push it to the Kria:
 
@@ -375,7 +375,7 @@ ASCII overview of which scripts touch which parts of the system:
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ LAPTOP                                                                   │
 │                                                                          │
-│  scripts/host/01_compile.sh                                              │
+│  scripts/host/02_compile.sh                                              │
 │   ├─ PyTorch (.pt)                                                       │
 │   ├─ ONNX export                                                         │
 │   ├─ NNDCT quantize                                                      │

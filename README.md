@@ -40,11 +40,18 @@ Tested with:
 
 ## Quick start
 
+```bash
+# Clone the repo (on both laptop and Kria)
+git clone https://github.com/abdullaadelaljaberi-debug/KriaKv260_Model_Compiler.git
+cd KriaKv260_Model_Compiler
+```
+
 If you already have a Kria with our scripts installed:
 
 ```bash
 # Laptop: compile + sync
-bash scripts/host/01_compile.sh yolov5n
+bash scripts/host/02_compile.sh yolov5 yolov5n \
+     data/weights/yolov5n_lpr.pt data/calib/
 bash scripts/host/03_sync_to_kria.sh ubuntu@<kria-ip> yolov5n
 
 # Kria: run live
@@ -61,8 +68,11 @@ If you're starting from a fresh Kria SD card, see
 | Doc | When to read |
 |---|---|
 | [**docs/KRIA_SETUP.md**](docs/KRIA_SETUP.md) | One-time install on a fresh SD card |
+| [**docs/HOST_SETUP.md**](docs/HOST_SETUP.md) | One-time install on your laptop (Vitis AI Docker, NVIDIA, etc.) |
 | [**docs/USAGE.md**](docs/USAGE.md) | Daily workflow + adding new variants/families |
+| [**docs/MODELS.md**](docs/MODELS.md) | Supported model families + how to add new ones |
 | [**docs/TROUBLESHOOTING.md**](docs/TROUBLESHOOTING.md) | Every issue we've hit, with forensic detail |
+| [**docs/CHANGELOG.md**](docs/CHANGELOG.md) | Version history |
 
 ## Performance (as of `v0.6-pass6-validated`, 2026-05)
 
@@ -77,11 +87,31 @@ Camera-bound at 60 fps; DPU has ~30% spare capacity on yolov5n. See
 [KRIA_SETUP.md §11](docs/KRIA_SETUP.md#11-validated-performance) for
 full per-stage breakdown.
 
+## VAI 3.5 model zoo benchmark (separate workflow)
+
+For benchmarking the AMD VAI 3.5 model zoo (~34 pre-compiled classification
++ detection models against COCO val2017, VOC2007 test, and ImageNetV2),
+the workflow is host-driven to keep heavy downloads off the Kria's SD card:
+
+```bash
+# Laptop: download + stage data (~12 GB, ~60 min)
+bash scripts/host/04_stage_benchmark.sh
+
+# Laptop: push to Kria
+bash scripts/host/05_sync_benchmark_to_kria.sh ubuntu@<kria-ip>
+
+# Kria: run the benchmark
+sudo bash scripts/kria/run_live.sh yolov5n
+# Then open notebooks/04_vai35_benchmark.ipynb in the browser
+```
+
+See [USAGE.md §13](docs/USAGE.md#13-vai-35-model-zoo-benchmark) for details.
+
 ## Repo layout
 
 ```
 scripts/
-  host/                # laptop-side: compile + sync
+  host/                # laptop-side: compile + sync + benchmark staging
   kria/                # board-side: install + tune + run
 
 lpr_pipeline/
@@ -93,6 +123,7 @@ notebooks/
   01_compile.ipynb         # optional walk-through of the compile pipeline
   02_deploy_text.ipynb     # max-throughput text-mode live demo
   03_deploy_visual.ipynb   # visual live demo with bounding boxes + sliders
+  04_vai35_benchmark.ipynb # VAI 3.5 model zoo benchmark (host-staged data)
 
 docs/                  # this directory
 ```
@@ -110,7 +141,7 @@ See [USAGE.md §12](docs/USAGE.md#12-whats-where) for a fuller tour.
 
 Adding a new YOLOv5 variant: edit
 [`lpr_pipeline/shared/models.py`](lpr_pipeline/shared/models.py), drop
-the weights at the expected path, run `scripts/host/01_compile.sh`. See
+the weights at the expected path, run `scripts/host/02_compile.sh`. See
 [USAGE.md §10](docs/USAGE.md#10-deep-dive-adding-a-new-yolov5-variant).
 
 ## License

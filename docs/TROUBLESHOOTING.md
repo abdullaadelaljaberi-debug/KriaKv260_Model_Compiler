@@ -795,3 +795,163 @@ sudo fuser /dev/video0 2>&1
 
 That snapshot is almost always enough to identify which section above
 applies, or to localize a new issue.
+
+## VAI 3.5 benchmark workflow issues
+
+### Stage script fails with `SSL: CERTIFICATE_VERIFY_FAILED`
+
+```
+[get]  resnet50: https://www.xilinx.com/bin/public/...
+    FAILED: <urlopen error [SSL: CERTIFICATE_VERIFY_FAILED]
+    certificate verify failed: unable to get local issuer certificate>
+```
+
+**Cause**: Your laptop's CA bundle doesn't trust xilinx.com's cert chain.
+This was specifically a Kria issue (Ubuntu 22.04 LTS for Kria has an
+older CA bundle) but can also happen on older laptop installs.
+
+**Fix**: Install `certifi`. The stage script uses certifi's CA bundle
+preferentially when available, falling back to unverified SSL only as a
+last resort.
+
+```bash
+pip install certifi
+# Then re-run
+bash scripts/host/04_stage_benchmark.sh
+```
+
+If certifi was already installed and SSL still fails, the script
+automatically falls back to unverified SSL — you'll see `[warn]
+downloaded with unverified SSL` in the output. This is acceptable for
+the trusted AMD URLs we hit.
+
+### `rsync: mkdir failed: Permission denied`
+
+```
+rsync: [Receiver] mkdir "/home/ubuntu/KriaKv260_Model_Compiler/notebooks/..." failed: Permission denied (13)
+```
+
+**Cause**: An earlier Jupyter session running as root created
+`notebooks/` subdirectories that are root-owned. Your SSH session as
+`ubuntu` can't write into them.
+
+**Fix**: Reset ownership on the Kria.
+
+```bash
+ssh -t ubuntu@<kria-ip> 'sudo chown -R ubuntu:ubuntu /home/ubuntu/KriaKv260_Model_Compiler/notebooks/'
+```
+
+Note `-t` to allocate a TTY for the sudo prompt. Then re-run rsync.
+
+### Benchmark notebook fails: `RuntimeError: Benchmark data not staged`
+
+The notebook's prerequisite-check cell raises this when models or
+datasets are missing.
+
+**Cause**: You launched the notebook before running the host-side staging
+scripts, or the sync didn't complete cleanly.
+
+**Fix**: From your laptop, run both stages of the workflow:
+
+```bash
+bash scripts/host/04_stage_benchmark.sh                          # downloads
+bash scripts/host/05_sync_benchmark_to_kria.sh ubuntu@<kria-ip>  # push to Kria
+```
+
+Then re-run the prerequisite-check cell.
+
+### Stage script aborts with `insufficient free disk space`
+
+```
+ABORT: insufficient free disk space.
+  Need:  15.0 GB
+  Have:  8.2 GB
+```
+
+**Cause**: The script's pre-flight check requires ≥15 GB free at the
+stage root (catalogue size + ~3 GB safety margin).
+
+**Fix options**:
+
+1. Free space on your laptop:
+   ```bash
+   docker system prune -a       # Vitis-AI Docker images can be ~25 GB
+   du -sh ~/Downloads/* | sort -h
+   ```
+
+2. Override the check if you know what you're doing:
+   ```bash
+   bash scripts/host/04_stage_benchmark.sh --min-free-gb 5
+   ```
+   The check is conservative — actual peak usage is ~12 GB during
+   downloads, dropping to ~6 GB after tarball cleanup.
+
+### Kria SD card corrupted under sustained writes
+
+This is the issue that motivated the host-driven workflow in the first
+place. Symptoms:
+
+- `fsck exited with status 4` on next boot
+- `unable to set superblock flags` when running fsck manually
+- BusyBox emergency shell on boot
+
+**Cause**: Consumer SD card controllers handle sustained heavy I/O badly.
+The original in-notebook download wrote ~10 GB sequentially while the
+controller was also serving system reads. Combined with kernel write-back
+cache, the corruption window was large.
+
+**Recovery** (if it happens):
+
+1. Try fsck with backup superblocks:
+   ```bash
+   # From the emergency shell
+   fsck.ext4 -y -b 32768 /dev/mmcblk1p2
+   # If that fails:
+   fsck.ext4 -y -b 98304 /dev/mmcblk1p2
+   ```
+
+2. If fsck can't recover, re-flash the SD card with a fresh image. The
+   Pass 5 install scripts (`scripts/kria/01_install_vai35.sh` etc.) make
+   recovery reliable.
+
+**Prevention**: always use the host-driven workflow
+(`scripts/host/04_stage_benchmark.sh` + `05_sync_benchmark_to_kria.sh`)
+for benchmark data. Never run sustained downloads directly on the Kria.
+
+### Sync to Kria fails with `Insufficient remote disk space`
+
+```
+Insufficient remote disk: need ~13 GB, have 4 GB.
+```
+
+**Cause**: Your Kria's SD card doesn't have room for the staged data.
+
+**Fix options**:
+
+1. Clean up old benchmark data on the Kria:
+   ```bash
+   ssh ubuntu@<kria-ip> '
+       rm -rf ~/KriaKv260_Model_Compiler/notebooks/Models_VAI35
+       rm -rf ~/KriaKv260_Model_Compiler/notebooks/Datasets
+   '
+   ```
+
+2. If still tight, use a larger SD card. 32 GB minimum is recommended
+   for this workflow; 64 GB gives comfortable headroom.
+
+### ImageNetV2 label resolution shows `N labels not in name-to-index mapping`
+
+```
+warning: 2 labels not in name-to-index mapping
+ImageNet sample: 4998 images
+```
+
+**Cause**: Some class names in your labels.txt don't match Keras's
+standard `imagenet_class_index.json` names (case, spacing, etc.).
+
+**Fix**: Usually harmless — you lose a few of ~10K images. If you need
+exact resolution, check the staged `imagenet_class_index.json` matches
+the labels.txt format. The staging script generates labels.txt from
+ImageNetV2's directory structure (where directory name IS the class
+index), so this shouldn't happen if you used the host script. If it does,
+your `labels.txt` may have been manually edited — re-run staging.

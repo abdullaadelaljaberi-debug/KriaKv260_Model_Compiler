@@ -28,7 +28,7 @@ Pipeline tested on these versions; older may work but unsupported.
 ### 0. Verify your starting point
 
 ```bash
-git clone https://github.com/AbdullaAdel/KriaKv260_Model_Compiler.git
+git clone https://github.com/abdullaadelaljaberi-debug/KriaKv260_Model_Compiler.git
 cd KriaKv260_Model_Compiler
 bash scripts/host/00_check_prereqs.sh
 ```
