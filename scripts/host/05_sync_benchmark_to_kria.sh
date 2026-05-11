@@ -148,15 +148,22 @@ ssh "${SSH_OPTS[@]}" "$KRIA" "mkdir -p '$REMOTE_BASE'" \
     || die "could not create $REMOTE_BASE on $KRIA"
 
 # ─── rsync ─────────────────────────────────────────────────────────────────
+# --copy-links is CRITICAL: the host-side staging uses symlinks under
+# Datasets/imagenet_sample/images/ that point into the source extraction
+# dir (imagenetv2-matched-frequency-format-val/). Without --copy-links,
+# rsync would preserve the symlinks AS symlinks — and since their targets
+# (laptop's /home/aaljaberi/.../build/...) don't exist on the Kria, every
+# ImageNet image becomes a broken pointer. --copy-links sends the real
+# file contents in place of each symlink, so the Kria gets actual JPEGs.
 RSYNC_FLAGS=(
     --archive              # -rlptgoD (preserve perms, times, symlinks, etc.)
+    --copy-links           # dereference symlinks during transfer (CRITICAL — see comment above)
     --human-readable
     --partial              # keep partial files for resume
-    --inplace              # write to dest directly (less SD card churn vs temp+rename)
     --info=progress2       # nice progress display
     --exclude='_downloads/'        # don't sync cache dirs
     --exclude='.stage_state.json'  # local state, not for Kria
-    --exclude='imagenetv2-matched-frequency-format-val/'  # source for symlinks; redundant
+    --exclude='imagenetv2-matched-frequency-format-val/'  # source for symlinks; --copy-links makes this redundant on Kria
 )
 (( DRY_RUN == 1 )) && RSYNC_FLAGS+=( --dry-run )
 
@@ -183,10 +190,14 @@ log_step "Verification"
 log_info "Counting remote files..."
 remote_files=$(ssh "${SSH_OPTS[@]}" "$KRIA" \
     "find $REMOTE_BASE/Models_VAI35 $REMOTE_BASE/Datasets -type f 2>/dev/null | wc -l" || echo "0")
-remote_size=$(ssh "${SSH_OPTS[@]}" "$KRIA" \
-    "du -sh $REMOTE_BASE/Models_VAI35 $REMOTE_BASE/Datasets 2>/dev/null | awk '{s+=\$1}END{print s\"M (approx)\"}' " || echo "?")
 log_info "  remote files:  $remote_files"
-log_info "  remote size:   $remote_size"
+# Show each top-level dir's actual size separately. The previous version
+# tried to sum the `du -sh` output with awk, which broke because du's output
+# mixes units (947M + 3.3G = "950M (approx)" due to suffix-stripping).
+log_info "  remote sizes:"
+ssh "${SSH_OPTS[@]}" "$KRIA" \
+    "du -sh $REMOTE_BASE/Models_VAI35 $REMOTE_BASE/Datasets 2>/dev/null" \
+    | sed 's|^|    |' || log_warn "  could not query remote sizes"
 
 # Spot-check: one xmodel + the imagenet labels.txt
 log_info "Spot-checking key files..."

@@ -1056,3 +1056,87 @@ sudo cp /tmp/vai3.5_kr260.zip /home/ubuntu/.cache/kriakv260_install/
 # Re-run — the script detects the existing zip and skips the wget
 bash scripts/kria/01_install_vai35.sh
 ```
+
+## Benchmark sync to Kria: ImageNet images are broken symlinks
+
+**Symptom**: After running `scripts/host/05_sync_benchmark_to_kria.sh`,
+the Kria reports a much smaller `Datasets/` size than the laptop. For
+example: laptop shows 3.3 GB, Kria shows 2.1 GB — and the
+`imagenet_sample/images/` directory contains broken symbolic links
+pointing back at the laptop's filesystem.
+
+```
+ubuntu@kria:~$ ls -la ~/KriaKv260_Model_Compiler/notebooks/Datasets/imagenet_sample/images/ | head -3
+lrwxrwxrwx 1 ubuntu ubuntu 191 May 11 19:37 cls0000_xxx.jpeg ->
+    /home/aaljaberi/.../build/benchmark_stage/Datasets/imagenetv2-matched-frequency-format-val/0/xxx.jpeg
+```
+
+The `file` command confirms it:
+
+```
+broken symbolic link to /home/aaljaberi/.../...
+```
+
+### Cause
+
+The host-side staging script (`scripts/host/_stage_benchmark.py`) creates
+symlinks under `imagenet_sample/images/` that point to the extracted
+ImageNetV2 source tree at
+`Datasets/imagenetv2-matched-frequency-format-val/`. This keeps the
+local staging area compact (each image lives once).
+
+In versions before v0.7.2, the sync script used `rsync --archive` which
+preserves symlinks **as symlinks** — copying the link text but not the
+target. Combined with an `--exclude` rule that intentionally skipped
+the source tree (since it was thought to be redundant), the Kria
+received broken pointers.
+
+### Detection
+
+```bash
+# On the Kria
+ssh ubuntu@<kria-ip> '
+  FIRST=$(ls ~/KriaKv260_Model_Compiler/notebooks/Datasets/imagenet_sample/images/ | head -1)
+  F=~/KriaKv260_Model_Compiler/notebooks/Datasets/imagenet_sample/images/$FIRST
+  file "$F"
+'
+```
+
+If `file` reports "broken symbolic link", you have this bug.
+
+### Fix (immediate — re-sync just the ImageNet subtree)
+
+```bash
+# On laptop
+cd ~/Documents/Girona_Masters/Thesis/KriaKv260_Model_Compiler
+
+rsync -ah --info=progress2 --copy-links \
+    build/benchmark_stage/Datasets/imagenet_sample/ \
+    ubuntu@<kria-ip>:/home/ubuntu/KriaKv260_Model_Compiler/notebooks/Datasets/imagenet_sample/
+```
+
+The `--copy-links` flag dereferences symlinks during transfer, sending
+the real JPEG content in place of each link. ~1.3 GB transfer over LAN.
+
+### Verify the fix
+
+```bash
+ssh ubuntu@<kria-ip> '
+  du -sh ~/KriaKv260_Model_Compiler/notebooks/Datasets/imagenet_sample
+  # Should be ~1.3G
+
+  FIRST=$(ls ~/KriaKv260_Model_Compiler/notebooks/Datasets/imagenet_sample/images/ | head -1)
+  F=~/KriaKv260_Model_Compiler/notebooks/Datasets/imagenet_sample/images/$FIRST
+  ls -la "$F"
+  # Should show -rw-r--r-- (regular file), not lrwxrwxrwx (symlink)
+  file "$F"
+  # Should report JPEG image data, not "broken symbolic link"
+'
+```
+
+### Permanent fix in v0.7.2
+
+The sync script (`scripts/host/05_sync_benchmark_to_kria.sh`) was patched
+to pass `--copy-links` to rsync by default, so future fresh syncs send
+real images. The `--inplace` flag was also dropped (it's incompatible
+with overwriting symlinks with regular files).
