@@ -1,0 +1,7 @@
+model,dataset,decoder,evaluable,skip_reason,n_images,n_total_dets,map_50,map_50_95,eval_time_s,error
+ssd_mobilenet_v1_coco_tf,coco,ssd_tf,True,,5000,33994,0.3839,0.2422,403.7,
+ssd_mobilenet_v2_coco_tf,coco,ssd_tf,True,,5000,29189,0.3834,0.2438,419.0,
+ssd_inception_v2_coco_tf,coco,ssd_tf,True,,5000,32216,0.4172,0.2789,481.0,
+yolov3_coco_416_tf2,coco,yolo,True,,5000,69595,0.617,0.316,1770.8,
+yolov4_leaky_spp_m,coco,yolo,True,,5000,77138,0.6161,0.1794,1760.0,
+ssdlite_mobilenet_v2_coco_tf,coco,ssd_tf,True,,5000,30523,0.3626,0.233,409.2,

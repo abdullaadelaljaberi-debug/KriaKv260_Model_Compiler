@@ -98,6 +98,7 @@ CATALOG = {
     "inception_v2_tf":                dict(category="classification", enabled=True),
     "inception_v3_tf":                dict(category="classification", enabled=True),
     "inception_v4_2016_09_09_tf":     dict(category="classification", enabled=True),
+    "inception_v4":                   dict(category="classification", enabled=True),  # Caffe variant; AMD reports 0.92 top-1 (vs 0.84 for TF variant)
     "mobilenet_v1_0_25_128_tf":       dict(category="classification", enabled=True),
     "mobilenet_v1_1_0_224_tf":        dict(category="classification", enabled=True),
     "mobilenet_v2_1_0_224_tf":        dict(category="classification", enabled=True),
@@ -119,7 +120,7 @@ CATALOG = {
     # Detection — COCO
     "ssd_mobilenet_v1_coco_tf":       dict(category="detection", enabled=True),
     "ssd_mobilenet_v2_coco_tf":       dict(category="detection", enabled=True),
-    "ssdlite_mobilenetv2_coco_tf":    dict(category="detection", enabled=True),
+    "ssdlite_mobilenet_v2_coco_tf":   dict(category="detection", enabled=True),
     "ssd_inception_v2_coco_tf":       dict(category="detection", enabled=True),
     "ssd_resnet_50_fpn_coco_tf":      dict(category="detection", enabled=True),
     "yolov3_coco_416_tf2":            dict(category="detection", enabled=True),
@@ -376,9 +377,14 @@ def download_models(stage_root: Path, only: Optional[str], state: StateLog) -> t
         cat_dir = models_dir / cfg["category"]
         cat_dir.mkdir(exist_ok=True)
 
+        # Resume detection: skip if we have a directory matching the model name
+        # exactly (NOT substring match — that would skip 'inception_v4' if
+        # 'inception_v4_2016_09_09_tf' is already on disk because the former
+        # name is a prefix of the latter).
         existing_xmodels = list(cat_dir.rglob("*.xmodel"))
-        if state.is_done(key) or any(name.lower() in p.parent.name.lower()
-                                       for p in existing_xmodels):
+        already_have = any(name.lower() == p.parent.name.lower()
+                            for p in existing_xmodels)
+        if state.is_done(key) or already_have:
             n_skip += 1
             print(f"  [{i:>2}/{len(enabled)}] skip {name}")
             continue
