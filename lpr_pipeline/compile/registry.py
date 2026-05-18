@@ -13,6 +13,7 @@ from .base import BaseCompiler, NotImplementedFamilyError
 
 _FAMILY_TO_MODULE = {
     "yolov5":           "lpr_pipeline.compile.yolov5",
+    "yolov11":          "lpr_pipeline.compile.yolov11",
     "yolox":            "lpr_pipeline.compile.yolox",
     "yolov7":           "lpr_pipeline.compile.yolov7",
     "yolov4_csp":       "lpr_pipeline.compile.yolov4_csp",

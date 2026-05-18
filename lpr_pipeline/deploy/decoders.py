@@ -9,6 +9,12 @@ Currently implements:
   `decode_yolov5u` — modern Ultralytics YOLOv5 (anchor-free DFL). Both
                     yolov5n and yolov5s use this format with the same
                     `reg_max=16, nc=1` layout in our LPR pipeline.
+  `decode_yolov11` — thin alias for `decode_yolov5u`. YOLOv11's Detect head
+                    has the exact same output structure as YOLOv5u (anchor-
+                    free, reg_max=16, [4*reg_max + nc] channels per scale)
+                    once the .pt is compiled through our pipeline's
+                    `_strip_detect_head_for_quant`. See `decode_yolov11`
+                    docstring for the equivalence proof.
 
 To add later:
 
@@ -161,3 +167,47 @@ def decode_yolov5u(
          float(scores[i]), 0)
         for i in idxs
     ]
+
+
+def decode_yolov11(
+    outputs: List[np.ndarray],
+    imgsz: int,
+    nc: int,
+    reg_max: int,
+    conf_thresh: float,
+    iou_thresh: float,
+    max_detections: int = 300,
+) -> List[Detection]:
+    """Decode the three-scale DFL output of a YOLOv11 xmodel.
+
+    Mathematically identical to ``decode_yolov5u``. Aliased here for
+    family-dispatch clarity in ``runner.py``.
+
+    Why the math is identical
+    -------------------------
+
+    YOLOv5u (modern Ultralytics) and YOLOv11 share the exact same Detect
+    head structure:
+
+    - Anchor-free DFL with ``reg_max=16``
+    - Three scales at strides 8, 16, 32
+    - Per-anchor channel layout: ``[4*reg_max box-reg | nc cls]`` after
+      our compile pipeline's ``_strip_detect_head_for_quant`` produces
+      ``cat(cv2[i](x[i]), cv3[i](x[i]))``
+    - Sigmoid on class logits, softmax-DFL-weighted-sum on box-reg
+    - Anchor centers at ``(x + 0.5, y + 0.5) * stride``
+
+    The only architectural difference between YOLOv5u and YOLOv11 is in
+    the backbone (C3 vs C3k2 + C2PSA attention) and the cv3 cls head
+    (plain Conv vs DWConv+Conv). Neither affects the output tensor
+    format that the decoder sees.
+
+    For YOLOv11n with our pipeline: ``imgsz=640``, three scales at
+    ``[1,80,80,65]``, ``[1,40,40,65]``, ``[1,20,20,65]``.
+
+    Parameters and return — see ``decode_yolov5u``.
+    """
+    return decode_yolov5u(
+        outputs, imgsz, nc, reg_max,
+        conf_thresh, iou_thresh, max_detections,
+    )

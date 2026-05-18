@@ -1,12 +1,13 @@
 # Supported model families
 
-The pipeline supports five object-detection families targeting Vitis-AI 3.5
+The pipeline supports six object-detection families targeting Vitis-AI 3.5
 on the Kria KV260's B4096 DPU. Each family has its own compile path because
 of differences in quantization conventions, head structure, and decoder logic.
 
 | Family | Variants | Status | Decoder | Notes |
 |---|---|---|---|---|
 | **YOLOv5** (Ultralytics u-variant) | `yolov5n`, `yolov5s` | ✅ full | DFL anchor-free | Single DPU subgraph; uses `pynq_dpu.DpuOverlay.runner` |
+| **YOLOv11** (Ultralytics) | `yolov11n` | ✅ full | DFL anchor-free | Requires architectural surgery at training time; see `docs/YOLOV11.md`. Single DPU subgraph after surgery. |
 | **YOLOX** (Megvii) | `yolox_tiny`, `yolox_nano` | ✅ full | sigmoid + grid | Multi-DPU-subgraph; uses `vitis_ai_library.GraphRunner` |
 | **YOLOv7** (WongKinYiu) | `yolov7-tiny` | 🚧 stub | anchor-based | Compile path scaffolded; family-specific code TBD |
 | **YOLOv4-CSP** | `yolov4_csp` | 🚧 stub | anchor-based | Compile path scaffolded; family-specific code TBD |
@@ -34,6 +35,40 @@ of differences in quantization conventions, head structure, and decoder logic.
 - **Calibration set**: any folder of representative images (UC3M-LP for the
   LPR demo)
 - **Demo**: `yolov5n` for license plate detection, ~60 fps live (camera-bound)
+
+### YOLOv11 (✅ full)
+
+- **Source**: [ultralytics/ultralytics](https://github.com/ultralytics/ultralytics) (modern Ultralytics packaging covers YOLOv8, v9, v10, v11)
+- **VAI 3.5 zoo entry**: none — YOLOv11 post-dates VAI 3.5's release; this pipeline
+  ships its own compile path
+- **Variants in this pipeline**:
+  - `yolov11n` — input 640×640, ~3.6M params after DPU-friendly surgery, single
+    352-op DPU subgraph on KV260 B4096
+- **Head**: anchor-free with Distribution Focal Loss (DFL), structurally
+  identical to YOLOv5u; same `reg_max=16` and channel layout, same
+  `_strip_detect_head_for_quant()` and same `decode_yolov5u()` decoder
+- **Architectural modifications applied at training time**:
+  - `C2PSA` → `C2PSA_DPU` (HardSigmoid + conv-based gating replaces
+    softmax-based attention)
+  - `DWConv` → plain `Conv` in the Detect head's `cv3` branch
+  - These modifications are NOT mathematically equivalent to the originals;
+    retraining is required. See `docs/YOLOV11.md` for the full operator-level
+    breakdown and the rationale.
+- **Output channels per cell**: `4*reg_max + nc` where `reg_max=16` — identical
+  to YOLOv5u, so decoder is reused (`decode_yolov11()` is a thin alias)
+- **Three output tensors** at strides 8, 16, 32 — shapes `[1, 80, 80, C]`,
+  `[1, 40, 40, C]`, `[1, 20, 20, C]` at imgsz=640
+- **Preprocessing**: identical to YOLOv5u (BGR → RGB, divide by 255 → float32
+  in `[0, 1]`); `Preprocessor("yolov11", 640)` is supported
+- **Training workflow**: use `scripts/host/_train_yolov11.py` — it applies the
+  monkey-patches before any `YOLO()` construction, trains, and produces a
+  DPU-ready `.pt`
+- **Calibration data**: must match deployment domain. For the egg detection
+  demo, calibration uses egg training images; using mismatched calibration
+  (e.g., LPR images for an egg model) causes significant quantization drift.
+- **Validated on**: egg detection (Roboflow `egg.v4` dataset, 933 train /
+  32 val images, single class) — mAP@0.5 = 0.995 in PyTorch, comparable
+  detection quality after int8 quantization
 
 ### YOLOX (✅ full)
 

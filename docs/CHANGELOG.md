@@ -1,5 +1,112 @@
 # Changelog
 
+## v0.8.0 — YOLOv11 family support (2026-05-18)
+
+### Added
+
+- **YOLOv11 as a first-class supported family** (`family="yolov11"`).
+  Promoted `yolov11n` from `status="stub"` to `status="full"`. See
+  `docs/YOLOV11.md` for the full user guide.
+
+- **`lpr_pipeline/c2psa_dpu.py`** — DPU-friendly replacement for Ultralytics'
+  C2PSA attention module. Element-wise gating + HardSigmoid replaces
+  matmul + softmax; conv-based channel selectors replace `chunk`/`split`;
+  `torch.cat` replaces `tensor.repeat` (the latter emitted `nndct_repeat`
+  which isn't in the XIR op set). Includes `from_original()` and
+  `repair_from_legacy()` constructors for in-memory and pickle-recovery
+  swaps.
+
+- **`lpr_pipeline/detect_dpu.py`** — `apply_dwconv_monkey_patch()` function
+  that rebinds `ultralytics.nn.modules.head.DWConv` to plain `Conv`. The
+  Detect head's `cv3` branch then builds with plain conv blocks at YAML
+  parse time, eliminating the CPU-subgraph fragmentation that YOLOv11n's
+  depthwise convolutions produce on DPUCZDX8G_ISA1.
+
+- **`lpr_pipeline/compile/yolov11.py`** — family-specific compile module.
+  Thin subclass of `YOLOv5Compiler` that adds defensive imports of
+  `lpr_pipeline.c2psa_dpu` and `lpr_pipeline.detect_dpu` (so pickle can
+  resolve the surgery classes during `torch.load` inside the Vitis-AI
+  container) and delegates to the parent's compile flow.
+
+- **`scripts/host/_train_yolov11.py`** — user-facing training entry point.
+  Applies both monkey-patches before YOLO construction, auto-detects GPU,
+  resolves Roboflow-style relative dataset paths, locates the trained
+  `best.pt` even when Ultralytics writes it to a non-default location,
+  and verifies the saved model has zero `DWConv` modules.
+
+- **`decode_yolov11()`** in `lpr_pipeline/deploy/decoders.py` — thin alias
+  for `decode_yolov5u()`. YOLOv5u and YOLOv11 share the Detect head's
+  output format exactly (anchor-free DFL, `reg_max=16`, same channel
+  layout, same anchor convention), so the underlying math is identical.
+
+- **`docs/YOLOV11.md`** — full user guide covering: when to use this
+  family, why training is a separate step, the seven architectural
+  modifications with rationale, the train/compile/sync/deploy workflow,
+  result expectations, known limitations (PTQ accuracy gap, dataset
+  bias, QAT as future work), and a troubleshooting section.
+
+### Changed
+
+- **`lpr_pipeline/compile/registry.py`** — added `"yolov11"` family
+  dispatch entry.
+
+- **`lpr_pipeline/shared/models.py`** — `Family` Literal extended to
+  include `"yolov11"`; the `yolov11n` variant moved into its own family
+  section with `status="full"` and updated notes describing the post-
+  surgery architecture (3.6M params, single 352-op DPU subgraph,
+  mAP@0.5 ≈ 0.99 on the egg validation set).
+
+- **`lpr_pipeline/deploy/preprocess.py`** — `Preprocessor` now accepts
+  `family="yolov11"`. YOLOv5u and YOLOv11 use identical input
+  preprocessing (letterbox + BGR→RGB + [0,1] float32 + NHWC), so the
+  same code path serves both.
+
+- **`lpr_pipeline/deploy/runner.py`** — `ModelRunner._SUPPORTED_FAMILIES`
+  extended to `("yolov5", "yolov11")`. Added `_DECODERS` dispatch dict
+  mapping family → decoder function. Updated docstrings throughout.
+
+- **`docs/MODELS.md`** — added YOLOv11 row to the families table and a
+  per-family section between YOLOv5 and YOLOX.
+
+### Why
+
+YOLOv11 brings two improvements over YOLOv5: the C3k2 block in the
+backbone/neck (more parameter-efficient than C3) and the C2PSA self-
+attention module (which improves localization on cluttered scenes).
+Supporting it on the KV260 required replacing both the attention block
+(which uses matmul + softmax + chunk operations that the DPU can't
+accelerate) and the Detect head's depthwise convolutions (which hit a
+shape constraint of DPUCZDX8G_ISA1 and force CPU subgraphs). With the
+surgery in place, YOLOv11n compiles to a single DPU subgraph and runs
+at full hardware speed, like the existing YOLOv5 family.
+
+### Validation
+
+On the Roboflow `egg.v4` dataset (single class, 933 train / 32 val images):
+
+- Trained model (post-surgery): mAP@0.5 = 0.995, mAP@0.5:0.95 = 0.97,
+  3,600,083 parameters, 117 fused layers
+- Compiled xmodel: 4.7 MB, single 352-op DPU subgraph + 3 output
+  fix2float CPU ops, loads cleanly via `pynq_dpu.DpuOverlay.load_model()`
+- DPU int8 detections match PyTorch float reference on the same input
+  (both detect the same ~50 true positives; both share the same ~12
+  background false positives that reflect dataset bias rather than
+  quantization)
+
+### Migration notes
+
+For users with existing v0.7.x workflows: nothing changes. YOLOv5 and
+YOLOX paths are untouched. The yolov11 family is purely additive.
+
+If you have a previously-trained YOLOv11n `.pt` from a non-DPU path (e.g.,
+stock Ultralytics training): you cannot use it directly with this
+pipeline. The DPU-friendly architecture has different operations
+(C2PSA_DPU instead of C2PSA, plain Conv instead of DWConv) that need to
+be retrained from scratch with the substitutions in place. Use
+`scripts/host/_train_yolov11.py` to produce a compatible model.
+
+---
+
 ## v0.7 — VAI 3.5 benchmark + SD-card hardening (2026-05-11)
 
 ### Added

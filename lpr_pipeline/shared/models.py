@@ -11,6 +11,9 @@ ssd_mobilenetv2). A "variant" is a specific model within a family
 
 Status per family:
     yolov5         — full pipeline support
+    yolov11        — full pipeline support (DPU-friendly arch via training-time
+                     monkey-patches; see scripts/host/_train_yolov11.py and
+                     docs/YOLOV11.md)
     yolox          — full pipeline support
     yolov7         — stub (deploy-side decoder TBD; compile raises)
     yolov4_csp     — stub
@@ -22,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 
-Family = Literal["yolov5", "yolox", "yolov7", "yolov4_csp", "ssd_mobilenetv2"]
+Family = Literal["yolov5", "yolov11", "yolox", "yolov7", "yolov4_csp", "ssd_mobilenetv2"]
 Status = Literal["full", "stub"]
 
 
@@ -83,6 +86,21 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
         name="yolov5s", family="yolov5",
         imgsz=320, reg_max=16, status="full",
         notes="~19 ms inference on KV260. Better mAP than n.",
+    ),
+
+    # ── YOLOv11 (Ultralytics; anchor-free DFL with attention backbone) ──────
+    # Requires architectural modifications for DPU compatibility (C2PSA →
+    # C2PSA_DPU and DWConv → Conv) applied at training time. The compile
+    # flow itself is identical to yolov5 once a DPU-friendly .pt exists.
+    "yolov11n": ModelSpec(
+        name="yolov11n", family="yolov11",
+        imgsz=640, reg_max=16, status="full",
+        notes="YOLOv11n (Ultralytics; anchor-free DFL, ~3.6M params after "
+              "DPU-friendly architecture surgery). Requires the C2PSA → "
+              "C2PSA_DPU and DWConv → Conv replacements applied at "
+              "training time — see scripts/host/_train_yolov11.py. "
+              "Compiles to a single ~352-op DPU subgraph on KV260 B4096. "
+              "Validated on the egg detection task (mAP@0.5 ≈ 0.99).",
     ),
 
     # ── YOLOX (Megvii; anchor-free, decoupled head) ─────────────────────────

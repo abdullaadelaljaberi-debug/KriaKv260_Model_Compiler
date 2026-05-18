@@ -9,9 +9,17 @@ FPGA fabric with the DPU bitstream. After the bitstream is loaded, you can
 swap xmodels onto it via `overlay.load_model(path)`. We don't recreate the
 overlay across model swaps because reprogramming the fabric is ~3-5 seconds.
 
-Currently only the YOLOv5 path is wired up (PYNQ-DPU's `overlay.runner`
-single-DPU-subgraph runner). YOLOX needs `vitis_ai_library.GraphRunner` for
-multi-subgraph models — that's a separate code path, not yet implemented.
+Currently supports two families via single-DPU-subgraph runner:
+
+  * yolov5  (yolov5n, yolov5s for LPR)
+  * yolov11 (yolov11n; DPU-friendly architecture via training-time monkey-
+             patches in scripts/host/_train_yolov11.py)
+
+Both families share the same DFL decoder; the family field in the spec
+just controls which decode_* alias is dispatched.
+
+YOLOX is not yet wired here — it needs `vitis_ai_library.GraphRunner` for
+multi-subgraph models, a separate code path not yet implemented.
 """
 from __future__ import annotations
 
@@ -21,7 +29,11 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from lpr_pipeline.deploy.decoders   import decode_yolov5u, Detection
+from lpr_pipeline.deploy.decoders   import (
+    Detection,
+    decode_yolov5u,
+    decode_yolov11,
+)
 from lpr_pipeline.deploy.preprocess import Preprocessor, unletterbox
 from lpr_pipeline.shared.models     import ModelSpec
 
@@ -30,6 +42,23 @@ from lpr_pipeline.shared.models     import ModelSpec
 # at compile time. If a downloaded xmodel has a different fingerprint, the
 # DPU runtime will reject it at load time with a clear error.
 EXPECTED_FINGERPRINT = "0x101000056010407"
+
+
+# Families supported by this runner. Both produce the same DFL output format
+# at the Detect head and use the same single-DPU-subgraph runtime. They differ
+# only in backbone architecture (which is internal to the xmodel and doesn't
+# affect runner-level dispatch).
+_SUPPORTED_FAMILIES = ("yolov5", "yolov11")
+
+
+# Family → decoder dispatch. Both decoders implement the same math
+# (decode_yolov11 is an alias) but the explicit dispatch makes the intent
+# clear and leaves room for future per-family specialization (e.g. if
+# YOLOv11 multi-class deployments need class-aware NMS).
+_DECODERS = {
+    "yolov5":  decode_yolov5u,
+    "yolov11": decode_yolov11,
+}
 
 
 class ModelRunner:
@@ -73,15 +102,19 @@ class ModelRunner:
                 f"  bash scripts/host/03_sync_to_kria.sh ubuntu@<kria-ip> {spec.name}"
             )
 
-        if spec.family != "yolov5":
+        if spec.family not in _SUPPORTED_FAMILIES:
             raise NotImplementedError(
                 f"ModelRunner: family {spec.family!r} not yet supported. "
-                f"YOLOv5 only for now; YOLOX requires GraphRunner and a "
-                f"different decoder."
+                f"Currently wired: {_SUPPORTED_FAMILIES}. "
+                f"YOLOX requires GraphRunner and a different decoder; "
+                f"YOLOv7/v4_csp/SSD are stubs."
             )
 
         # Build the preprocessor (allocates buffers).
         self.preprocess = Preprocessor(spec.family, spec.imgsz)
+
+        # Resolve the decoder for this family.
+        self._decode = _DECODERS[spec.family]
 
         # Load the xmodel into the DPU. The overlay is mutated in place; if
         # multiple ModelRunners share one overlay, only the last-loaded model
@@ -91,8 +124,9 @@ class ModelRunner:
 
         # Pre-allocate output buffers in NHWC matching what the xmodel emits.
         # `get_output_tensors` returns one tensor per scale (3 scales for our
-        # YOLOv5: stride 8, 16, 32 → shapes [1,40,40,65], [1,20,20,65],
-        # [1,10,10,65] at imgsz=320).
+        # YOLO models: stride 8, 16, 32). Per-spec example shapes:
+        #   yolov5n (imgsz=320): [1,40,40,65], [1,20,20,65], [1,10,10,65]
+        #   yolov11n (imgsz=640): [1,80,80,65], [1,40,40,65], [1,20,20,65]
         self.out_buffers = [
             np.zeros(tuple(t.dims), dtype=np.float32, order="C")
             for t in self.runner.get_output_tensors()
@@ -174,9 +208,9 @@ class ModelRunner:
         self.runner.wait(job_id)
         timings["dpu"] = (time.perf_counter() - t0) * 1000
 
-        # Decode
+        # Decode (family-specific dispatch, but currently identical math).
         t0 = time.perf_counter()
-        raw_dets = decode_yolov5u(
+        raw_dets = self._decode(
             self.out_buffers, self.spec.imgsz,
             self.spec.nc, self.spec.reg_max,
             conf, iou, max_detections,

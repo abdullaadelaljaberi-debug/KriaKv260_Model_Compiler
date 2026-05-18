@@ -14,9 +14,10 @@ buffers in `__init__`. After construction, there are zero numpy allocations
 per call. On a Cortex-A53 at 1.5 GHz this runs in ~1 ms for 480p input → 320
 canvas, dominated by the cv2.resize call.
 
-Currently only YOLOv5u preprocessing is implemented. YOLOX is documented in
-the model registry but its DPU input format (uint8 right-shifted, int8 view)
-is different and will be added when we end-to-end test YOLOX deployment.
+YOLOv5u and YOLOv11 use identical preprocessing (letterbox + BGR→RGB + [0,1]
+float32 + NHWC), so a single Preprocessor class serves both families. YOLOX
+uses a different input format (uint8 right-shifted, int8 view) and will be
+added when we end-to-end test YOLOX deployment.
 """
 from __future__ import annotations
 
@@ -26,17 +27,26 @@ import cv2
 import numpy as np
 
 
+# Families that use the standard Ultralytics-style preprocessing implemented
+# here: letterbox to square imgsz with pad value 114, BGR→RGB conversion,
+# float32 normalization to [0, 1], NHWC output layout. Both YOLOv5u (modern
+# Ultralytics) and YOLOv11 produce calibration data via this exact pipeline
+# (see lpr_pipeline/compile/yolov5.py's calibration loader), so deploy-side
+# preprocessing must match exactly or quantization scales will be off.
+_STANDARD_FAMILIES = ("yolov5", "yolov11")
+
+
 class Preprocessor:
     """Pre-allocated letterbox-and-normalize for DPU input.
 
     Parameters
     ----------
     family : str
-        Model family. Currently 'yolov5'. 'yolox' raises NotImplementedError
-        with a pointer to the relevant code path.
+        Model family. Supported: 'yolov5', 'yolov11' (identical preprocessing).
+        'yolox' raises NotImplementedError — it needs different normalization.
     imgsz : int
-        Model input side in pixels (square). Both yolov5n and yolov5s use
-        320 in the current pipeline.
+        Model input side in pixels (square). yolov5n/s use 320; yolov11n
+        uses 640.
 
     Notes
     -----
@@ -50,12 +60,12 @@ class Preprocessor:
     """
 
     def __init__(self, family: str, imgsz: int):
-        if family not in ("yolov5",):
+        if family not in _STANDARD_FAMILIES:
             raise NotImplementedError(
                 f"Preprocessor: family {family!r} not implemented yet. "
-                f"YOLOv5 only for now; YOLOX preprocessing requires "
-                f"different normalization (uint8 right-shift → int8 view) "
-                f"and will be added in a future pass."
+                f"Supported: {_STANDARD_FAMILIES}. "
+                f"YOLOX needs different normalization (uint8 right-shift → "
+                f"int8 view) and will be added in a future pass."
             )
         self.family = family
         self.imgsz  = imgsz
