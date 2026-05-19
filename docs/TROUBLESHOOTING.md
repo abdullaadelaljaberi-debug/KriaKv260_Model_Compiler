@@ -1195,7 +1195,7 @@ Abandon QAT in favor of:
    environment (see [YOLOV11.md "Hard-negative training workflow"](./YOLOV11.md#hard-negative-training-workflow))
 3. **Larger model capacity** — switch to yolov11s (or larger) to get
    more weight redundancy against int8 noise (see
-   [YOLOV11.md "Capacity vs quantization"](./YOLOV11.md#capacity-vs-quantization-the-v010-experiment))
+   [YOLOV11.md "Capacity vs quantization"](./YOLOV11.md#capacity-vs-architecture-what-int8-quantization-actually-depends-on))
 
 Empirically, this combination reduces deployment int8 false positives
 by 67% on the eggs benchmark without any training-pipeline changes.
@@ -1247,7 +1247,7 @@ In order of effectiveness (and complexity):
 2. **Switch to a larger model variant.** Most effective. yolov11s vs
    yolov11n produced **67% fewer FPs** at conf=0.85 with zero detection
    precision loss. Throughput cost: ~33% (25.8 → 17.2 FPS). See
-   [YOLOV11.md "Capacity vs quantization"](./YOLOV11.md#capacity-vs-quantization-the-v010-experiment).
+   [YOLOV11.md "Capacity vs quantization"](./YOLOV11.md#capacity-vs-architecture-what-int8-quantization-actually-depends-on).
 
 3. **Add hard-negative training data.** Helps the float model
    significantly (eggs deployment: from ~12 FPs at float to 0 FPs at

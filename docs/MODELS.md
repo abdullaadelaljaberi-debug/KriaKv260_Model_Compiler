@@ -147,8 +147,9 @@ For YOLOv5 / YOLOX, adding e.g. `yolov5m` or `yolox_s` requires:
 1. Train (or download) the variant weights to `data/weights/<name>.pt`
 2. Add an entry to `lpr_pipeline/shared/models.py` with the right `imgsz`,
    `nc`, etc.
-3. Run `bash scripts/host/02_compile.sh <family> <name>` — the existing
-   compile pipeline handles all variants of a supported family
+3. Run `bash scripts/host/02_compile.sh <family> <name> <weights> <calib>` —
+   for example, `bash scripts/host/02_compile.sh yolov5 yolov5m data/weights/yolov5m.pt data/calib/`.
+   The existing compile pipeline handles all variants of a supported family.
 
 For YOLOv11, adding e.g. `yolov11m` requires the same three steps PLUS
 re-training with `scripts/host/_train_yolov11.py` because the

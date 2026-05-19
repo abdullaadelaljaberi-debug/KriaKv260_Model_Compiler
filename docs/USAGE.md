@@ -260,7 +260,7 @@ Expected outcome (synthetic input):
 - yolov11s: ~17 FPS, cleaner detections, ~67% fewer false positives at
   the same confidence threshold
 
-See [YOLOV11.md "Capacity vs quantization"](./YOLOV11.md#capacity-vs-quantization-the-v010-experiment)
+See [YOLOV11.md "Capacity vs quantization"](./YOLOV11.md#capacity-vs-architecture-what-int8-quantization-actually-depends-on)
 for the full study.
 
 ## 8. Reading the performance numbers
@@ -323,7 +323,7 @@ Quick reference. For full forensic detail see [TROUBLESHOOTING.md](./TROUBLESHOO
 | Tuning script reports `Device or resource busy` | Jupyter still holds the camera; Kernel → Restart in Jupyter, then re-run tuning |
 | Kria can't find the xmodel | Did you `bash scripts/host/03_sync_to_kria.sh ...` from the laptop? |
 | `xrt_device_handle_imp` Check failed | Stale DPU process holding the device. `sudo pkill -f python3` then retry |
-| yolov11s/yolov11n high int8 FPs | Try the larger variant (yolov11s) or raise conf threshold; see [YOLOV11.md](./YOLOV11.md#capacity-vs-quantization-the-v010-experiment) |
+| yolov11s/yolov11n high int8 FPs | Try the larger variant (yolov11s) or raise conf threshold; see [YOLOV11.md](./YOLOV11.md#capacity-vs-architecture-what-int8-quantization-actually-depends-on) |
 
 ## 10. Deep dive: adding a new YOLOv5 variant
 
@@ -566,9 +566,18 @@ bash scripts/host/05_sync_benchmark_to_kria.sh ubuntu@10.42.0.27 --dry-run
 
 ```bash
 # On Kria
-sudo bash scripts/kria/run_live.sh yolov5n
-# (variant doesn't matter; we just need Jupyter + DPU access)
+sudo bash scripts/kria/run_benchmark.sh
 ```
+
+This is the dedicated benchmark launcher (companion to `run_live.sh`).
+It takes no variant argument because the benchmark notebook iterates
+over the full model catalogue. Compared to `run_live.sh`, it:
+
+- Doesn't validate or load a specific xmodel (the notebook does that
+  per-model)
+- Auto-fixes root-owned files in the repo so subsequent rsyncs from the
+  laptop don't hit Permission denied
+- Prints a copy-paste URL with the Kria's LAN IP pre-filled
 
 Then in your laptop's browser, open `notebooks/04_vai35_benchmark.ipynb`
 and run cells top to bottom.

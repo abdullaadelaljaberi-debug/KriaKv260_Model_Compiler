@@ -313,7 +313,7 @@ sudo systemctl status kriakv260-tuning.service
 ## 8. Sync a compiled xmodel from your laptop
 
 On the laptop side, you compile an xmodel using `scripts/host/02_compile.sh`
-(see [USAGE.md](./USAGE.md#compiling-a-model) for that side of the
+(see [USAGE.md](./USAGE.md#3-compiling-a-model-laptop-side) for that side of the
 workflow). Then push it to the Kria:
 
 ```bash
@@ -333,7 +333,7 @@ sudo bash scripts/kria/run_live.sh yolov5n visual
 ```
 
 (Use `text` instead of `visual` for the max-throughput notebook with no
-video preview — see [USAGE.md](./USAGE.md#text-vs-visual-mode) for the
+video preview — see [USAGE.md](./USAGE.md#6-text-vs-visual-mode) for the
 difference.)
 
 The script will:
@@ -362,7 +362,7 @@ Followed by Jupyter's own output containing the token. Paste the URL
 (with token) into your laptop's browser.
 
 In JupyterLab, open the notebook and run all cells. See
-[USAGE.md](./USAGE.md#running-the-live-demo) for what to expect.
+[USAGE.md](./USAGE.md#5-running-the-live-demo) for what to expect.
 
 To stop, click the **■ Stop** button in the visual notebook's controls
 panel, or press Ctrl-C twice in the Kria terminal.
@@ -498,7 +498,7 @@ held-out industrial test set, eggs deployment scene):
 The yolov11s variant produces **67% fewer false positives** at the
 deployment threshold with no detection precision loss. Throughput
 tradeoff: 33% drop. See
-[YOLOV11.md "Capacity vs quantization"](./YOLOV11.md#capacity-vs-quantization-the-v010-experiment)
+[YOLOV11.md "Capacity vs quantization"](./YOLOV11.md#capacity-vs-architecture-what-int8-quantization-actually-depends-on)
 for the full study.
 
 ## 12. What can go wrong (and where to look)
@@ -513,7 +513,7 @@ for the full study.
 | `ThreadedCamera()` raises `cannot open camera 0` | `/dev/video0` doesn't exist | Camera not enumerated; replug, see [TROUBLESHOOTING.md → camera missing](./TROUBLESHOOTING.md#camera-missing) |
 | `ThreadedCamera()` raises `no frames received in 3s` | Camera in wrong mode (YUYV instead of MJPG) | Re-run tuning, see [TROUBLESHOOTING.md → camera no frames](./TROUBLESHOOTING.md#camera-no-frames) |
 | Live demo runs but `inf_fps` is ~15 fps not ~60 | USB autosuspend re-enabled (kernel quirk) | Re-run `sudo bash scripts/kria/02_apply_tuning.sh` |
-| YOLOv11n int8 produces high FPs on cluttered backgrounds | int8 capacity floor reached for fine-grained discrimination | [YOLOV11.md → Capacity vs quantization](./YOLOV11.md#capacity-vs-quantization-the-v010-experiment); try yolov11s |
+| YOLOv11n int8 produces high FPs on cluttered backgrounds | int8 capacity floor reached for fine-grained discrimination | [YOLOV11.md → Capacity vs quantization](./YOLOV11.md#capacity-vs-architecture-what-int8-quantization-actually-depends-on); try yolov11s |
 | `run_live.sh yolov11s` says "unknown variant" | Stale script on Kria; needs the v0.10 case-statement | [TROUBLESHOOTING.md → run_live.sh rejects new variants](./TROUBLESHOOTING.md#run_livesh-rejects-new-variants-with-unknown-variant) |
 
 For the full forensic treatment of every issue we've hit, see

@@ -180,8 +180,8 @@ bash scripts/host/04_stage_benchmark.sh
 # Laptop: push to Kria
 bash scripts/host/05_sync_benchmark_to_kria.sh ubuntu@<kria-ip>
 
-# Kria: run the benchmark
-sudo bash scripts/kria/run_live.sh yolov5n
+# Kria: launch the benchmark Jupyter (no variant arg needed)
+sudo bash scripts/kria/run_benchmark.sh
 # Then open notebooks/04_vai35_benchmark.ipynb in the browser
 ```
 

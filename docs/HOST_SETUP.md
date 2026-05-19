@@ -127,7 +127,7 @@ docker pull xilinx/vitis-ai-onnx-cpu:latest
 This image is ~25 GB. **Not required** for the default compile pipeline
 (`scripts/host/02_compile.sh` uses NNDCT). Pull only if you're
 specifically investigating the ONNX path; see
-[YOLOV11.md "ONNX deployment path"](./YOLOV11.md#onnx-deployment-path--investigated-not-deployable)
+[YOLOV11.md "ONNX deployment path"](./YOLOV11.md#onnx-deployment-path-investigated-not-deployable)
 for the v0.10 outcome on that path.
 
 If you do work with the ONNX image and need additional Python packages

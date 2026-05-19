@@ -356,8 +356,8 @@ Multiple options on the Kria:
 
 ```bash
 # Live demo (yolov11n or yolov11s)
-bash scripts/kria/run_live.sh yolov11n
-bash scripts/kria/run_live.sh yolov11s
+sudo bash scripts/kria/run_live.sh yolov11n
+sudo bash scripts/kria/run_live.sh yolov11s
 
 # Or use ModelRunner directly from Python
 python3 -c "
