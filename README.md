@@ -9,6 +9,67 @@ inference.
 > license plate detection with YOLOv5n at **60 FPS live, ~12 ms/frame**,
 > and egg detection with YOLOv11n at **~25 FPS** / YOLOv11s at **~17 FPS**.*
 
+## About this project
+
+This repository provides an end-to-end pipeline for deploying industry-standard
+YOLO object-detection models on the [AMD Kria KV260](https://www.amd.com/en/products/system-on-modules/kria/k26/kv260-vision-starter-kit.html)
+Vision AI starter kit. It targets **YOLOv5 and YOLOv11** — among the
+most-deployed object detectors and well-supported on the Vitis-AI / DPU
+toolchain. Other YOLO families (YOLOX, YOLOv4-CSP, YOLOv7) and non-YOLO
+families (SSD-MobileNetV2) are present as registry stubs and partial
+implementations; YOLOv5 and YOLOv11 are the two end-to-end validated paths.
+
+The repository is aimed at practitioners and researchers who want to take a
+YOLO model trained in PyTorch and run it on the KV260's on-board DPU with
+int8 inference — without re-inventing the host-side toolchain or
+rediscovering the DPU's architectural constraints by trial and error.
+
+The repository's goals are:
+
+- **Bring up a Kria KV260 with a modern Vitis-AI runtime.** Step-by-step
+  setup from a blank SD card to a working DPU under Vitis-AI 3.5, with the
+  PYNQ-DPU overlay, calibrated camera input, and Jupyter-based live demos.
+- **Provide a reproducible PyTorch → xmodel compile pipeline.** Stock
+  Ultralytics checkpoints (`.pt`) flow through a single host-side script
+  (`scripts/host/02_compile.sh`) that handles activation-function swaps,
+  PyTorch-side tracing, NNDCT post-training quantization, and `vai_c_xir`
+  compilation to a deployable `.xmodel`. Adding a new variant within a
+  supported family is a single registry edit.
+- **Adapt modern YOLO architectures for the DPU.** The DPUCZDX8G_ISA1
+  (B4096 on the KV260) doesn't natively support every operator that modern
+  Ultralytics models use. This repo documents and applies the specific
+  architectural surgery required for YOLOv5 and YOLOv11 (Detect-head
+  stripping, SiLU → LeakyReLU, C2PSA → DPU-friendly variant via runtime
+  monkey-patching, DWConv → Conv, NHWC permute wrapper) so the resulting
+  xmodel compiles to a single DPU subgraph at full int8 quantization.
+
+The repository also includes a benchmark suite that runs the Vitis-AI 3.5
+model zoo plus the custom variants documented here, producing the per-stage
+latency / throughput / accuracy tables in
+[`docs/vai35_benchmark_report.md`](docs/vai35_benchmark_report.md). These
+demonstrate the KV260's inference capability across classification, detection,
+and pose tasks, and provide quantitative grounding for the architecture
+comparisons in [`docs/YOLOV11.md`](docs/YOLOV11.md).
+
+The YOLOv11 architectural-surgery recipe (C2PSA → C2PSA_DPU, DWConv → Conv)
+builds on the approach described in LogicTronix's Hackster guide:
+[Making YOLOv11 Compatible with Vitis AI 3.5 and DPU](https://www.hackster.io/LogicTronix/making-yolov11-compatible-with-vitis-ai-3-5-and-dpu-aaad80).
+Full attribution and our modifications are documented in
+[`docs/YOLOV11.md`](docs/YOLOV11.md).
+
+## Contents
+
+- [About this project](#about-this-project)
+- [What this does](#what-this-does)
+- [Quick start](#quick-start)
+- [Documentation](#documentation)
+- [Performance](#performance-as-of-v0110-2026-05)
+- [VAI 3.5 model zoo benchmark](#vai-35-model-zoo-benchmark-separate-workflow)
+- [Repo layout](#repo-layout)
+- [Supported models](#supported-models)
+- [License](#license)
+- [Acknowledgments](#acknowledgments)
+
 ## What this does
 
 ```
@@ -185,3 +246,11 @@ Built on top of AMD/Xilinx's [Kria-PYNQ](https://github.com/Xilinx/Kria-PYNQ),
 [Kria-RoboticsAI](https://github.com/amd/Kria-RoboticsAI). The Vitis AI 3.5
 upgrade procedure is adapted from AMD's reference scripts; documented in
 detail in [KRIA_SETUP.md](docs/KRIA_SETUP.md).
+
+The YOLOv11 architectural-surgery recipe (C2PSA → C2PSA_DPU replacement,
+DWConv → Conv in the Detect head) follows the approach described by
+LogicTronix in [Making YOLOv11 Compatible with Vitis AI 3.5 and DPU](https://www.hackster.io/LogicTronix/making-yolov11-compatible-with-vitis-ai-3-5-and-dpu-aaad80).
+Our implementation applies the substitution at training time via
+monkey-patching (to integrate cleanly with Ultralytics' training loop)
+and adds the SiLU → LeakyReLU compile-time swap and the NHWC permute wrapper
+for the deployed xmodel; documented in [docs/YOLOV11.md](docs/YOLOV11.md).
