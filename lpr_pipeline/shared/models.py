@@ -87,6 +87,17 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
         imgsz=320, reg_max=16, status="full",
         notes="~19 ms inference on KV260. Better mAP than n.",
     ),
+    "yolov5s_eggs": ModelSpec(
+        name="yolov5s_eggs", family="yolov5",
+        imgsz=640, reg_max=16, status="full",
+        notes="YOLOv5s (Ultralytics u-variant; anchor-free DFL, ~9.1M params). "
+              "Trained on eggs+hardneg at imgsz=640 for the architecture-"
+              "generation comparison vs yolov11s. v5 needs no training-time "
+              "DPU surgery — only the standard SiLU → LeakyReLU swap at "
+              "compile time. Sits between yolov11n (3.6M) and yolov11s (13.5M) "
+              "in parameter count; isolates 'architecture generation' from "
+              "'capacity' in the capacity-vs-quantization study.",
+    ),
 
     # ── YOLOv11 (Ultralytics; anchor-free DFL with attention backbone) ──────
     # Requires architectural modifications for DPU compatibility (C2PSA →

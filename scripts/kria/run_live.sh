@@ -70,40 +70,60 @@ EOF
 VARIANT="$1"
 MODE="${2:-text}"
 
-# ─── Dispatch variant → notebook ───────────────────────────────────────────
-# Different variants use different notebooks. yolov5* uses the LPR notebooks
-# (text/visual); yolov11n uses the eggs notebook (interactive input selector
-# so the user picks camera/video/folder in-notebook).
-case "$VARIANT" in
-    yolov5n|yolov5s)
+# ─── Dispatch variant → notebook (family-based) ───────────────────────────
+# Resolve VARIANT → family via the ModelSpec registry, then dispatch on family.
+# This keeps the registry as the single source of truth: any variant added to
+# lpr_pipeline/shared/models.py works automatically, with no script edits.
+FAMILY=$(python3 -c "
+import sys
+sys.path.insert(0, '$REPO_ROOT')
+try:
+    from lpr_pipeline.shared.models import get_spec
+    print(get_spec('$VARIANT').family)
+except KeyError:
+    sys.exit(2)
+except Exception as e:
+    print(f'ERROR: {e}', file=sys.stderr)
+    sys.exit(3)
+" 2>/dev/null)
+RC=$?
+
+if [[ $RC -eq 2 ]]; then
+    log_err "Variant '$VARIANT' is not registered in lpr_pipeline.shared.models"
+    log_err "(If you just added it on the host, sync lpr_pipeline/shared/models.py"
+    log_err " to the Kria with: rsync -av lpr_pipeline/shared/models.py ubuntu@<kria>:...)"
+    exit 1
+elif [[ $RC -ne 0 ]]; then
+    log_err "Failed to resolve variant '$VARIANT' (registry lookup error)"
+    exit 1
+fi
+
+case "$FAMILY" in
+    yolov5)
         case "$MODE" in
             text)   NOTEBOOK_FILENAME="02_deploy_text.ipynb"   ;;
             visual) NOTEBOOK_FILENAME="03_deploy_visual.ipynb" ;;
             *)
-                log_err "Unknown mode for $VARIANT: $MODE (expected 'text' or 'visual')"
+                log_err "Unknown mode for $FAMILY: $MODE (expected 'text' or 'visual')"
                 usage
                 ;;
         esac
         ;;
-    yolov11n|yolov11s)
+    yolov11)
         NOTEBOOK_FILENAME="eggs/05_deploy_visual.ipynb"
         if [[ "$MODE" != "text" ]]; then
-            # MODE was explicitly passed but we ignore it for yolov11n.
-            log_info "  (note: mode '$MODE' ignored for yolov11n; eggs notebook handles its own input selection)"
+            log_info "  (note: mode '$MODE' ignored for $VARIANT; eggs notebook handles its own input selection)"
         fi
         ;;
-    yolox_tiny|yolox_nano)
-        log_err "$VARIANT requires a multi-DPU-subgraph notebook (GraphRunner-based),"
+    yolox)
+        log_err "$FAMILY family requires a multi-DPU-subgraph notebook (GraphRunner-based),"
         log_err "which is not yet implemented. Use the benchmark notebook for these"
         log_err "variants until the live-demo path is added."
         exit 1
         ;;
     *)
-        log_err "Unknown variant: $VARIANT"
-        log_err "Supported variants:"
-        log_err "  yolov5n, yolov5s  — LPR demo (text/visual)"
-        log_err "  yolov11n          — egg detection demo"
-        log_err "  yolox_*           — not yet implemented for live demo"
+        log_err "Family '$FAMILY' (from variant '$VARIANT') has no associated notebook."
+        log_err "Add a case for it in scripts/kria/run_live.sh."
         exit 1
         ;;
 esac

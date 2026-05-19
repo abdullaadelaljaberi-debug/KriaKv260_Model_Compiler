@@ -93,13 +93,14 @@ If you're starting from a fresh Kria SD card, see
 | [**docs/vai25_vs_vai35_comparison.md**](docs/vai25_vs_vai35_comparison.md) | Cross-runtime comparison: VAI 2.5 → 3.5 reproducibility + methodology evolution |
 | [**docs/vai25_benchmark_report.md**](docs/vai25_benchmark_report.md) | VAI 2.5 benchmark results (historical baseline, v0.4 era) |
 
-## Performance (as of `v0.10.0`, 2026-05)
+## Performance (as of `v0.11.0`, 2026-05)
 
 | Model | Task | Pure DPU (ms) | End-to-end (FPS) | Notes |
 |---|---|---:|---:|---|
 | YOLOv5n | License plate | 7.74 | 60 (camera-bound) | Original validation; primary throughput demo |
-| YOLOv11n | Egg detection | ~38 | ~26 (synthetic input) | After DPU-friendly architecture surgery |
-| YOLOv11s | Egg detection | ~58 | ~17 (synthetic input) | 3.7× params, 67% fewer int8 FPs vs YOLOv11n |
+| YOLOv11n | Egg detection | ~38 | ~26 (synthetic input) | After DPU-friendly architecture surgery; int8 eggs F1 = 0.863 |
+| YOLOv5s (eggs) | Egg detection | ~49 | ~20 (synthetic input) | Architecture comparison: 9.1M params but **F1 0.673**, demonstrates capacity ≠ int8 robustness |
+| YOLOv11s | Egg detection | ~58 | ~17 (synthetic input) | 3.7× params vs YOLOv11n, 67% fewer int8 FPs, **best int8 eggs F1 0.842** |
 
 See [KRIA_SETUP.md §11](docs/KRIA_SETUP.md#11-validated-performance) for
 the YOLOv5n per-stage breakdown and [YOLOV11.md](docs/YOLOV11.md) for

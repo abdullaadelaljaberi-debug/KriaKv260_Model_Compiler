@@ -386,95 +386,240 @@ for both yolov11n and yolov11s.
 
 ---
 
-## Capacity vs quantization — the v0.10 experiment
+## Capacity vs architecture — what int8 quantization actually depends on
 
-This section documents the experimental investigation that motivated
-adding yolov11s. It's important enough that it belongs in the
-thesis-defense audience's understanding of why both variants exist.
+This section documents the v0.10 / v0.11 experimental investigation
+that motivated adding yolov11s and later yolov5s_eggs to the registry.
+The headline finding evolved through the investigation; we present the
+final conclusion and the data that led to it.
 
 ### Setup
 
-After v0.8 deployed yolov11n successfully on the eggs dataset, evaluation
-on a held-out **459-image industrial test set** (real conveyor footage)
-revealed an unexpected pattern:
+After v0.8 deployed yolov11n successfully on the eggs dataset,
+evaluation on a held-out **57-image industrial test set** (real
+conveyor footage with no eggs present — any detection is a false
+positive) revealed an unexpected pattern:
 
-- **PyTorch float `.pt` model** detected the ~50 true positives per
-  representative image with **zero false positives** at conf=0.85.
-- **DPU int8 xmodel** detected the same true positives but also
-  produced thousands of false positives on conveyor machinery, baskets,
-  and background structure at conf=0.85.
+- **PyTorch float `.pt` model** produced zero detections on industrial
+  imagery (max raw confidence ~0.0006 — the model correctly suppresses
+  egg-like activations on background)
+- **DPU int8 xmodel** produced thousands of false positives at conf=0.85,
+  with mean confidence ≈ 0.96 (saturated)
 
-The first attempted fix was **hard-negative training**: augment the
-eggs dataset with images of empty conveyor / machinery / packaging to
-teach the model "what an egg isn't" (see "Hard-negative training
-workflow" below for the procedure). After retraining yolov11n on the
-combined eggs + hard-negative dataset:
+The float-to-int8 gap was a confidence inflation of roughly 1,600×:
+near-zero pre-sigmoid activations on background regions were quantized
+in a way that saturated the output sigmoid.
 
-- **Float `.pt` model**: now zero false positives at conf=0.85 ✓
-- **DPU int8 xmodel**: false positives **unchanged or worse**
+Two early interventions were tried and quantified:
 
-This decoupling — float model perfect, int8 model failing —
-demonstrated that the bottleneck was the int8 quantization itself, not
-the training data.
+**Intervention 1 — hard-negative training.** Augmenting the eggs
+dataset with 402 labeled-empty industrial images brought the float
+model to **0 FPs** at conf=0.85 — but the int8 model's FP count was
+**unchanged**, demonstrating the bottleneck was the int8 quantization
+itself, not training data.
 
-The second attempt was **expanded calibration**: include the
-hard-negative images in the calibration set to ensure their activation
-statistics inform the quantization scales. Counterintuitively, this
-made the int8 model **worse**: 6,609 FPs at conf=0.85 vs 4,220 before.
-The reason is structural: the DPU hardware uses *per-tensor* (not
-per-channel) activation scales, and mixing in-domain and
-out-of-domain images forces those per-tensor scales to span a wider
-range. Wider scales mean coarser per-bucket quantization, more
-per-layer noise, and the downstream amplification produces more
-spurious high-confidence detections.
+**Intervention 2 — mixed calibration.** Including hard-negative images
+in the calibration set was tested on the assumption that the
+quantizer would benefit from seeing them. Counterintuitively this
+**increased** int8 FPs (4,220 → 6,609 at conf=0.85). The reason is the
+DPU's per-tensor (not per-channel) activation scale constraint: mixing
+in-domain and out-of-domain images widens the activation range the
+per-tensor scales must cover, making each int8 bucket coarser and
+amplifying per-layer quantization noise.
 
-The third attempt — and the one that worked — was the **capacity
-hypothesis**: maybe the int8 quantization noise overwhelms a small
-model but is tolerable for a bigger one with more weight redundancy.
+With training-data fixes failing, the next hypothesis was **model
+capacity**: that quantization noise scales inversely with parameter
+count, and a bigger model would have more weight redundancy to absorb
+the noise. yolov11s was added to test this and succeeded at reducing
+industrial FPs (2,172 vs yolov11n's 6,609 at conf=0.85). The v0.10
+release initially framed this as "capacity is the dominant lever."
 
-### Results
+That conclusion turned out to be incomplete. To test whether the
+benefit came from capacity *or* from something specific to the YOLOv11
+architecture, we trained a third model: **yolov5s** on the same
+augmented eggs dataset at the same imgsz=640. yolov5s sits between
+yolov11n (3.6M params) and yolov11s (13.5M params) at 9.1M params —
+**2.5× yolov11n's capacity**. If capacity alone explained yolov11s's
+int8 robustness, yolov5s should land between them on FP count.
 
-Tested by training yolov11s (3.7× yolov11n's parameters) on the same
-augmented dataset, compiling with the same calibration set, and
-evaluating on the same 459-image industrial test set:
+### Experimental design
 
-| Threshold | yolov11n (mixed calib) | yolov11s | Reduction |
-|---:|---:|---:|---:|
-| @ 0.50 | 7,685 FPs | 4,826 | -37% |
-| @ 0.70 | 7,493 FPs | 3,443 | -54% |
-| @ 0.85 | 6,609 FPs | **2,172** | **-67%** |
-| Worst single image | 165 FPs | 67 | -59% |
-| Mean FP confidence @ 0.85 | 0.96 | 0.93 | Lower saturation |
+Three architecturally distinct models, trained on identical data,
+evaluated identically:
 
-Egg-detection precision was preserved end-to-end (yolov11n vs yolov11s
-on three validation images: 53/57/47 vs 52/58/47 detections, average
-delta 0).
+| Model | Params | Architecture features |
+|---|---:|---|
+| yolov11n | 3,600,083 | C2PSA_DPU attention + DPU-friendly conv head |
+| yolov5s_eggs | 9,122,579 | Pure-conv YOLOv5u; no attention; no DPU surgery needed |
+| yolov11s | 13,479,891 | C2PSA_DPU + DPU-friendly conv head; 3.7× yolov11n capacity |
 
-Throughput tradeoff (synthetic input, 100 iterations on Kria):
+**Identical training pipeline:**
+- 50 epochs, batch 16, imgsz=640
+- Eggs + hardneg dataset: 1,335 train images (933 egg-positive + 402
+  hard-negative), 32 validation images with 1,749 ground-truth eggs
+- Final float mAP@0.5 = 0.995 for all three (architectural differences
+  invisible at float)
 
-| Variant | DPU latency (mean) | End-to-end FPS |
+**Identical compile pipeline:**
+- NNDCT PTQ quantization
+- In-domain (eggs-only) calibration set
+- vai_c_xir compilation for KV260 B4096 (DPUCZDX8G_ISA1 fingerprint
+  `0x101000056010407`)
+
+**Two complementary evaluations:**
+
+1. **Eggs validation set** (32 images, 1,749 ground-truth eggs) — measures
+   detection quality on positive-class imagery using IoU≥0.5 matching for
+   TPs / FPs / FNs.
+2. **Industrial test set** (57 negative-class images) — measures
+   background false-positive rate. Any detection is a FP.
+
+Together these give a complete picture: test 1 catches "model lost real
+eggs"; test 2 catches "model invented eggs in noise." Either alone tells
+an incomplete story.
+
+### Float baselines (all three models)
+
+All three models are effectively perfect at float precision:
+
+| Model | Industrial FPs @ 0.85 | Eggs P / R / F1 @ 0.85 |
+|---|---:|:---|
+| yolov11n float | 0 | 0.9994 / 0.9971 / 0.9983 |
+| yolov5s_eggs float | 0 | **1.0000** / 0.9983 / **0.9991** |
+| yolov11s float | 0 | 0.9994 / 0.9966 / 0.9980 |
+
+The 1,749 ground-truth eggs are detected with > 99.6% recall and > 99.9%
+precision across all three architectures. **Architectural differences
+are invisible at float precision.** The training pipeline works.
+
+### Int8 results — the full picture
+
+All numbers below measured on KV260 B4096 at VAI 3.5 / DPUCZDX8G_ISA1.
+
+**Eggs validation set (32 images, 1,749 ground-truth eggs, conf ≥ 0.85, IoU ≥ 0.5):**
+
+| Model | Params | TPs | FPs | FNs | Precision | Recall | F1 | F1 drop vs float |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| yolov11n | 3.6M | 1,449 | 160 | 300 | 0.9006 | 0.8285 | **0.863** | −13.5 |
+| **yolov5s_eggs** | **9.1M** | **1,133** | **485** | **616** | **0.7002** | **0.6478** | **0.673** | **−32.6** |
+| yolov11s | 13.5M | 1,525 | 348 | 224 | 0.8142 | **0.8719** | **0.842** | −15.6 |
+
+**Industrial test set (57 negative images, any detection is FP):**
+
+| Model | FPs @ 0.50 | FPs @ 0.70 | FPs @ 0.85 | Mean confidence |
+|---|---:|---:|---:|---:|
+| yolov11n | 7,685 | 7,493 | 6,609 | 0.96 |
+| **yolov5s_eggs** | 6,769 | 6,565 | 5,690 | **0.98** |
+| yolov11s | 4,826 | 3,443 | **2,172** | 0.93 |
+
+**Throughput on the Kria (synthetic input, 100 iterations):**
+
+| Variant | DPU mean latency | End-to-end FPS |
 |---|---:|---:|
 | yolov11n | 38.8 ms | 25.8 |
+| yolov5s_eggs | 49.0 ms | 20.4 |
 | yolov11s | 58.2 ms | 17.2 |
 
-### Interpretation for thesis
+### Finding 1: capacity alone does not explain int8 robustness
 
-For DPU int8 deployment of fine-grained single-class discrimination,
-**model capacity is the dominant lever** for quantization robustness.
-Training-data composition and calibration strategy are secondary
-factors. The cost is throughput (33% drop) for a ~3× false-positive
-reduction with zero detection-precision compromise.
+If capacity were the dominant factor, **yolov5s at 9.1M parameters
+(2.5× yolov11n's capacity) should outperform yolov11n on int8 metrics.**
+It doesn't. It produces:
 
-The intuition: with more parameters, the model has more weight
-redundancy, so the per-layer quantization noise (which is roughly
-constant for a given DPU hardware spec) is a smaller fraction of any
-single weight's signal. Bigger models also have a wider dynamic range
-in their activations, which spreads better over the int8 quantization
-bins. Together these effects compound through the network's depth.
+- **Worse eggs F1** than yolov11n (0.673 vs 0.863)
+- **More eggs FPs** than yolov11n (485 vs 160)
+- **More eggs FNs** than yolov11n (616 vs 300)
+- **The highest mean prediction confidence (0.98)** — most saturated of
+  the three int8 models
 
-This finding generalizes a result that's been observed in NLP
-(quantization tolerance scales with model size) into the DPU object-
-detection regime.
+Despite having 2.5× the parameters, yolov5s's int8 deployment is
+strictly worse than yolov11n's on the same task. The simple
+capacity hypothesis is falsified.
+
+### Finding 2: architecture-family matters more than capacity
+
+The YOLOv11 family (with the C2PSA_DPU attention block and the DPU-
+friendly conv head) resists int8 quantization noticeably better than
+the YOLOv5u family on this task:
+
+| Family / size class | F1 drop float → int8 |
+|---|---:|
+| YOLOv11 small (3.6M, yolov11n) | −13.5 |
+| YOLOv5  medium (9.1M, yolov5s_eggs) | **−32.6** |
+| YOLOv11 large (13.5M, yolov11s) | −15.6 |
+
+Both YOLOv11 variants — at very different capacities — degrade by
+about the same amount (~14-16 F1 points). The mid-capacity YOLOv5s
+degrades **more than twice as much** (32.6 points).
+
+The *architecture family* is the dominant first-order factor; capacity
+is a second-order modifier within a family.
+
+### Finding 3: capacity within a family still matters
+
+Comparing yolov11n vs yolov11s (same architecture, different capacity):
+
+- yolov11s industrial FPs at 0.85: **2,172 vs yolov11n's 6,609** (−67%)
+- yolov11s eggs recall: **87.2% vs yolov11n's 82.9%** (+4.3 points)
+- yolov11s eggs F1: 0.842 vs yolov11n's 0.863 (−2.1 points, due to
+  more FPs on eggs imagery)
+
+Within YOLOv11, more capacity = strictly fewer background FPs and
+slightly better recall on real eggs, traded for marginally lower
+eggs-image precision and 33% lower throughput. The intra-family
+scaling matches the original "capacity gives weight redundancy"
+story — but only *within* the YOLOv11 family, not across families.
+
+### Mechanism (interpretation)
+
+The plausible mechanism for v11 outperforming v5 at int8 is the
+C2PSA_DPU attention block's gating action. HardSigmoid-gated activations
+have bounded output (0,1) which produces tighter activation scales
+under per-tensor quantization. YOLOv5u's pure-conv stack passes
+features through without gating, producing wider activation
+distributions that spread the per-tensor scales further — making each
+int8 bucket coarser and more error-prone for fine-grained
+discrimination.
+
+Indirect evidence supporting this:
+
+- yolov5s int8 produces **`RuntimeWarning: overflow encountered in
+  exp`** inside the YOLOv5u decoder's sigmoid (saturation past
+  representable float range)
+- yolov5s mean prediction confidence (0.98) is highest of the three —
+  most saturated
+- yolov11s mean confidence (0.93) is lowest — least saturated
+
+The architectural design choice that justifies the cost of the
+yolov11 surgery (the C2PSA_DPU replacement) appears to pay back as
+int8 quantization robustness, not just deployability.
+
+### Recommendation
+
+For DPU int8 deployment of fine-grained single-class discrimination on
+the Kria KV260:
+
+1. **Choose YOLOv11 over YOLOv5u** if int8 quality matters. The
+   architecture surgery (C2PSA_DPU, DWConv→Conv) is worth its cost.
+2. **Within YOLOv11, choose capacity per your throughput budget**:
+   yolov11s if you can afford 17 FPS and need low background FP rate;
+   yolov11n if you need 25+ FPS and can tolerate higher FPs.
+3. **Don't assume more capacity in another family solves int8
+   problems** — it doesn't, as yolov5s demonstrates.
+
+### Caveats
+
+- **Single dataset, single class.** Generalization to multi-class
+  detection or different scenes hasn't been tested.
+- **Single DPU hardware target** (DPUCZDX8G_ISA1, B4096). Newer
+  Versal AI Edge DPUs with per-channel scales may behave differently.
+- **yolov11s float is not strictly better than yolov11n float.**
+  yolov11n has higher mAP@0.5:0.95 (0.97 vs 0.915) on the eggs valid
+  set. The choice of yolov11s for int8 deployment trades a small
+  float-precision penalty for substantial int8 robustness.
+- **Hard-negative training is necessary but not sufficient.** All
+  three models needed hard-negative training to reach 0 float FPs;
+  none reached 0 int8 FPs at conf=0.85.
 
 ---
 

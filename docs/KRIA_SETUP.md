@@ -487,7 +487,7 @@ on a 640×640×3 random tensor):
 | yolov11n | 38.8 | 25.76 |
 | yolov11s | 58.2 | 17.18 |
 
-Industrial test-set deployment (`measure_fps_kria.py` on a 459-image
+Industrial test-set deployment (`measure_fps_kria.py` on a 57-image
 held-out industrial test set, eggs deployment scene):
 
 | Variant | Detection precision (eggs/img avg) | FPs @ conf=0.85 |

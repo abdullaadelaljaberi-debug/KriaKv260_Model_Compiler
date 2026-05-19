@@ -37,6 +37,22 @@ share root causes.
 - [Can't find Kria's IP](#cant-find-krias-ip)
 - [Browser shows ERR_CONNECTION_REFUSED](#err_connection_refused)
 
+### v0.8-v0.10 sections
+
+- [QAT abandoned for PTQ + hard-negative training](#qat-abandoned-for-ptq--hard-negative-training)
+- [High int8 false-positive rate despite clean float model](#high-int8-false-positive-rate-despite-clean-float-model)
+- [Mixed calibration set INCREASES int8 false positives](#mixed-calibration-set-increases-int8-false-positives)
+- [`vai_q_onnx` crashes in `align_concat` on YOLOv11](#vai_q_onnx-crashes-in-align_concat-on-yolov11)
+- [DPU resource lock — `xrt_device_handle_imp` Check failed](#dpu-resource-lock--xrt_device_handle_imp-check-failed)
+- [Vitis-AI container OOM during PTQ calibration](#vitis-ai-container-oom-during-ptq-calibration)
+- [Pip install fails as non-root inside the Vitis-AI conda env](#pip-install-fails-as-non-root-inside-the-vitis-ai-conda-env)
+- [Numpy import error after partial pip install in the container](#numpy-import-error-after-partial-pip-install-in-the-container)
+- [`measure_fps_kria.py` hardcoded to yolov11n](#measure_fps_kriapy-hardcoded-to-yolov11n)
+- [`run_live.sh` rejects new variants with "unknown variant"](#run_livesh-rejects-new-variants-with-unknown-variant) — *RESOLVED in v0.11*
+- [Eggs notebook hardcoded `get_spec("yolov11n")` — cosmetic warning](#eggs-notebook-hardcoded-get_specyolov11n--cosmetic-warning)
+- [bash `!` history expansion mangles commit messages](#bash--history-expansion-mangles-commit-messages)
+
+
 ---
 
 ## `libvart-runtime` version check fails
@@ -1140,32 +1156,6 @@ The sync script (`scripts/host/05_sync_benchmark_to_kria.sh`) was patched
 to pass `--copy-links` to rsync by default, so future fresh syncs send
 real images. The `--inplace` flag was also dropped (it's incompatible
 with overwriting symlinks with regular files).
-# Troubleshooting — new entries for v0.8 through v0.10
-
-These sections supplement the existing TROUBLESHOOTING.md, which covers
-install-time and Pass 5/6 runtime issues. The entries below cover
-quantization, hard-negative training, ONNX investigation, and the
-variant-handling fixes added in v0.8.0 through v0.10.0.
-
-**To merge**: copy the contents of this file into the bottom of
-`docs/TROUBLESHOOTING.md`, then update the table of contents at the
-top of that file to add the new section headings. The headings are:
-
-- [QAT abandoned for PTQ + hard-negative training](#qat-abandoned-for-ptq--hard-negative-training)
-- [High int8 false-positive rate despite clean float model](#high-int8-false-positive-rate-despite-clean-float-model)
-- [Mixed calibration set INCREASES int8 false positives](#mixed-calibration-set-increases-int8-false-positives)
-- [`vai_q_onnx` crashes in `align_concat` on YOLOv11](#vai_q_onnx-crashes-in-align_concat-on-yolov11)
-- [DPU resource lock — `xrt_device_handle_imp` Check failed](#dpu-resource-lock--xrt_device_handle_imp-check-failed)
-- [Vitis-AI container OOM during PTQ calibration](#vitis-ai-container-oom-during-ptq-calibration)
-- [Pip install fails as non-root inside the Vitis-AI conda env](#pip-install-fails-as-non-root-inside-the-vitis-ai-conda-env)
-- [Numpy import error after partial pip install in the container](#numpy-import-error-after-partial-pip-install-in-the-container)
-- [`measure_fps_kria.py` hardcoded to yolov11n](#measure_fps_kriapy-hardcoded-to-yolov11n)
-- [`run_live.sh` rejects new variants with "unknown variant"](#run_livesh-rejects-new-variants-with-unknown-variant)
-- [Eggs notebook hardcoded `get_spec("yolov11n")` — cosmetic warning](#eggs-notebook-hardcoded-get_specyolov11n--cosmetic-warning)
-- [bash `!` history expansion mangles commit messages](#bash--history-expansion-mangles-commit-messages)
-
----
-
 ## QAT abandoned for PTQ + hard-negative training
 
 ### Symptom
@@ -1699,7 +1689,14 @@ not from a hardcoded constant.
 
 ## `run_live.sh` rejects new variants with "unknown variant"
 
-### Symptom
+> **RESOLVED in v0.11.** `scripts/kria/run_live.sh` now resolves
+> `variant → family` via the `lpr_pipeline.shared.models` registry and
+> dispatches on `family`, not on a hardcoded variant whitelist. Any
+> variant added to the registry works automatically — no script edit
+> required. The historical entry below describes the v0.10-era issue
+> and is retained for users on older versions.
+
+### Symptom (v0.10 and earlier)
 
 You add a new variant (e.g., `yolov11s`) to the registry, sync its
 xmodel to the Kria, and try to launch:
@@ -1709,14 +1706,14 @@ $ sudo bash scripts/kria/run_live.sh yolov11s
 [FAIL] Unknown variant: yolov11s
 ```
 
-### Cause
+### Cause (v0.10 and earlier)
 
-`run_live.sh` has a `case` statement that maps variant names to
+`run_live.sh` had a `case` statement that mapped variant names to
 notebook paths. When a new variant is added to the registry, the
 script's `case` block needs an explicit entry — it doesn't read the
 registry.
 
-### Fix
+### Fix (v0.10 and earlier)
 
 Edit `scripts/kria/run_live.sh`, find the variant dispatch (search
 for "Unknown variant"), and add the new variant to the case branch
@@ -1744,750 +1741,32 @@ Then re-sync the script to the Kria:
 rsync -av scripts/kria/run_live.sh ubuntu@<kria-ip>:/home/ubuntu/KriaKv260_Model_Compiler/scripts/kria/
 ```
 
-### Prevention
+### Resolution (v0.11)
 
-When adding a new variant, do the registry update and the
-`run_live.sh` update in the same commit. This is documented in
-[USAGE.md §10](./USAGE.md#10-deep-dive-adding-a-new-yolov5-variant)
-("Deep dive: adding a new variant").
-
-A more robust pattern would be to read the registry's `family` field
-in `run_live.sh` and dispatch by family rather than by variant name.
-TODO: refactor `run_live.sh` to call `python3 -c "from
-lpr_pipeline.shared.models import get_spec; print(get_spec('...').family)"`
-once and dispatch on the result.
-
----
-
-## Eggs notebook hardcoded `get_spec("yolov11n")` — cosmetic warning
-
-### Symptom
-
-You launch `run_live.sh yolov11s` and the eggs notebook
-(`notebooks/eggs/05_deploy_visual.ipynb`) loads. Inference works
-correctly — detections appear, FPS is reported. But the notebook's
-status panel says `spec=yolov11n` even though you're running yolov11s.
-
-### Cause
-
-The notebook has `spec = get_spec("yolov11n")` hardcoded in
-configuration cell 2. The yolov11n and yolov11s specs happen to be
-identical (same family, imgsz, nc, reg_max), so the runner works
-correctly regardless — but the displayed spec name is wrong.
-
-### Fix
-
-For correctness, change the notebook's cell 2 to read the variant
-from the environment:
-
-```python
-import os
-VARIANT = os.environ.get("LPR_VARIANT", "yolov11n")
-spec = get_spec(VARIANT)
-```
-
-This is the same pattern the YOLOv5 notebooks use.
-
-### Prevention
-
-When adding a notebook for a new variant or family, always read
-`LPR_VARIANT` from the environment (set by `run_live.sh`) rather than
-hardcoding a name. Hardcoded names are a regression risk every time a
-new variant is added to that family.
-
----
-
-## bash `!` history expansion mangles commit messages
-
-### Symptom
-
-You're crafting a git commit message in a multi-line `git commit -m
-"..."` invocation. One of the lines contains a `!` character (e.g.,
-"override the !data/weights/*.pt rule"). Bash interrupts with:
-
-```
-bash: !data/weights/: event not found
-```
-
-The commit still succeeds, but the message in the commit object may
-be missing the line containing `!`.
-
-### Cause
-
-Interactive bash (with `set +H` not in effect) treats `!` as the
-history-expansion sigil. In `"..."` double-quoted strings, `!` is
-still expanded; you'd need single quotes or to escape the `!` to
-disable expansion.
-
-### Fix
-
-Three workarounds, in order of convenience:
-
-**Option A: use single quotes for the commit message**
+The variant whitelist was replaced with a family-based dispatch that
+reads the registry as the single source of truth:
 
 ```bash
-git commit -m '
-v0.10: gitignore changes
-Override the !data/weights/*.pt rule to track trained checkpoints.
-'
-```
-
-**Option B: disable history expansion for this shell**
-
-```bash
-set +H
-git commit -m "..."  # now ! is literal
-```
-
-**Option C: escape the bang**
-
-```bash
-git commit -m "Override the \!data/weights/*.pt rule"
-# Note: bash will keep the backslash in the commit message; you may not want this
-```
-
-**Option D: use `git commit` with an editor and a draft file**
-
-```bash
-$EDITOR /tmp/commit-msg.txt   # edit freely; no shell interpretation
-git commit -F /tmp/commit-msg.txt
-```
-
-### Verifying the commit message
-
-After committing despite the warning, verify the message looks right:
-
-```bash
-git log --format='%H%n%n%B%n---%n' -1 HEAD
-```
-
-If `!`-containing lines are missing, redo the commit with
-`git commit --amend` using one of the workarounds above.
-
-### Prevention
-
-For multi-line commit messages with shell metacharacters, prefer
-**Option D** (editor + `-F`). It avoids all shell-quoting issues
-permanently.
-
-For everyday two-line commit messages, just remember: `!` in
-double-quoted bash strings is dangerous.
-# Troubleshooting — new entries for v0.8 through v0.10
-
-These sections supplement the existing TROUBLESHOOTING.md, which covers
-install-time and Pass 5/6 runtime issues. The entries below cover
-quantization, hard-negative training, ONNX investigation, and the
-variant-handling fixes added in v0.8.0 through v0.10.0.
-
-**To merge**: copy the contents of this file into the bottom of
-`docs/TROUBLESHOOTING.md`, then update the table of contents at the
-top of that file to add the new section headings. The headings are:
-
-- [QAT abandoned for PTQ + hard-negative training](#qat-abandoned-for-ptq--hard-negative-training)
-- [High int8 false-positive rate despite clean float model](#high-int8-false-positive-rate-despite-clean-float-model)
-- [Mixed calibration set INCREASES int8 false positives](#mixed-calibration-set-increases-int8-false-positives)
-- [`vai_q_onnx` crashes in `align_concat` on YOLOv11](#vai_q_onnx-crashes-in-align_concat-on-yolov11)
-- [DPU resource lock — `xrt_device_handle_imp` Check failed](#dpu-resource-lock--xrt_device_handle_imp-check-failed)
-- [Vitis-AI container OOM during PTQ calibration](#vitis-ai-container-oom-during-ptq-calibration)
-- [Pip install fails as non-root inside the Vitis-AI conda env](#pip-install-fails-as-non-root-inside-the-vitis-ai-conda-env)
-- [Numpy import error after partial pip install in the container](#numpy-import-error-after-partial-pip-install-in-the-container)
-- [`measure_fps_kria.py` hardcoded to yolov11n](#measure_fps_kriapy-hardcoded-to-yolov11n)
-- [`run_live.sh` rejects new variants with "unknown variant"](#run_livesh-rejects-new-variants-with-unknown-variant)
-- [Eggs notebook hardcoded `get_spec("yolov11n")` — cosmetic warning](#eggs-notebook-hardcoded-get_specyolov11n--cosmetic-warning)
-- [bash `!` history expansion mangles commit messages](#bash--history-expansion-mangles-commit-messages)
-
----
-
-## QAT abandoned for PTQ + hard-negative training
-
-### Symptom
-
-Vitis-AI's `pytorch_nndct.QatProcessor` integration with Ultralytics'
-training loop fails or produces unstable training, despite the QAT API
-being documented in Vitis-AI 3.5.
-
-### Cause
-
-`QatProcessor` expects a PyTorch-native training loop where forward
-hooks, backward hooks, and parameter management are directly
-accessible. Ultralytics' `BaseTrainer` wraps modules with its own
-forward hooks (for loss callbacks), uses its own DDP setup, and
-re-instantiates the model from YAML during `setup_model()` in ways
-that conflict with NNDCT's wrapping.
-
-Specifically:
-1. NNDCT wraps modules with `QuantStub` markers, but Ultralytics'
-   re-instantiation strips the markers
-2. NNDCT expects to control `optimizer.zero_grad()` / `loss.backward()`
-   ordering, but Ultralytics' trainer owns the optimizer
-3. NNDCT's gradient hooks interact badly with Ultralytics' AMP scaler
-
-Workarounds (custom training loop bypassing the Ultralytics trainer)
-were investigated but proved fragile and added significant
-maintenance debt.
-
-### Fix
-
-Abandon QAT in favor of:
-
-1. **PTQ via NNDCT** — the default path; no training-loop integration
-   needed
-2. **Hard-negative training** — augment your dataset with images that
-   contain no target-class objects but visually match the deployment
-   environment (see [YOLOV11.md "Hard-negative training workflow"](./YOLOV11.md#hard-negative-training-workflow))
-3. **Larger model capacity** — switch to yolov11s (or larger) to get
-   more weight redundancy against int8 noise (see
-   [YOLOV11.md "Capacity vs quantization"](./YOLOV11.md#capacity-vs-quantization-the-v010-experiment))
-
-Empirically, this combination reduces deployment int8 false positives
-by 67% on the eggs benchmark without any training-pipeline changes.
-
-### Prevention
-
-For future work on a different DPU target or with a different training
-framework, QAT may still be worth attempting. The infrastructure for
-hardware-friendly training (the monkey-patches in
-`scripts/host/_train_yolov11.py`) is independent of the
-QAT-vs-PTQ choice.
-
----
-
-## High int8 false-positive rate despite clean float model
-
-### Symptom
-
-A trained YOLOv11n model in PyTorch float (`.pt`) shows zero or very
-few false positives on a held-out industrial test set at conf=0.85.
-After compiling to xmodel and deploying on the Kria, the same model
-produces thousands of false positives on the same images. Mean
-confidence of the false positives is suspiciously saturated (mean ≈
-0.96).
-
-### Cause
-
-This is the int8 quantization tax. The PyTorch float model has
-~32-bit float precision throughout; the DPU runs ~8-bit fixed-point
-with per-tensor activation scales. For fine-grained single-class
-discrimination tasks (e.g., "is this egg-shaped object actually an
-egg, vs a plastic basket or cardboard packaging?"), the int8 precision
-loss erodes the decision boundary, producing high-confidence false
-positives on visually similar non-target objects.
-
-The DPU hardware constraint (per-tensor, not per-channel, activation
-scales) means there's no quantizer-level fix — the constraint is
-baked into the silicon.
-
-### Fix
-
-In order of effectiveness (and complexity):
-
-1. **Raise the deployment confidence threshold.** Cheapest. Works if
-   your true positives have separable confidence from false positives.
-   For the eggs deployment: threshold 0.85 separates clean true
-   positives from background false positives reasonably well.
-
-2. **Switch to a larger model variant.** Most effective. yolov11s vs
-   yolov11n produced **67% fewer FPs** at conf=0.85 with zero detection
-   precision loss. Throughput cost: ~33% (25.8 → 17.2 FPS). See
-   [YOLOV11.md "Capacity vs quantization"](./YOLOV11.md#capacity-vs-quantization-the-v010-experiment).
-
-3. **Add hard-negative training data.** Helps the float model
-   significantly (eggs deployment: from ~12 FPs at float to 0 FPs at
-   float). May or may not transfer to int8 — measure both. For the
-   eggs deployment, hard-neg training fixed float but did not by
-   itself reduce int8 FPs.
-
-4. **Verify calibration set composition.** Use in-domain images only.
-   Mixing in-domain and out-of-domain calibration images *increases*
-   int8 FPs by widening per-tensor activation scales. See "Mixed
-   calibration set INCREASES int8 false positives" below.
-
-### Prevention
-
-Choose the smallest model variant that fits your **deployment int8
-accuracy budget**, not your **training float accuracy budget**. They
-are different. A model that's perfect at float can still produce
-catastrophic int8 deployment performance on cluttered backgrounds.
-
-Measure deployment int8 quality on representative test imagery early
-(after the first compile + sync), before committing to a model size.
-
----
-
-## Mixed calibration set INCREASES int8 false positives
-
-### Symptom
-
-You augment your training data with hard-negative images (industrial
-background frames without target class). You decide to also include
-those hard-neg images in the calibration set so the quantizer "knows
-about them." Your int8 false-positive rate gets *worse*, not better.
-
-### Cause
-
-The DPU hardware uses **per-tensor** (not per-channel) activation
-scales for all int8 quantization. The calibration step measures
-activation min/max across the calibration images and chooses a single
-scale per tensor that covers the observed range.
-
-When you mix in-domain images (e.g., eggs on conveyor) with
-out-of-domain images (e.g., empty conveyor / packaging machinery), you
-*widen* the observed activation range across the calibration set. The
-chosen per-tensor scales become coarser. Each int8 bucket now covers a
-wider float range, so per-layer quantization noise increases.
-
-That extra noise amplifies through the network depth and produces
-**more** spurious high-confidence detections, not fewer.
-
-Empirical observation (v0.10 yolov11n):
-
-| Calibration set | int8 FPs @ 0.85 |
-|---|---:|
-| 600 in-domain (eggs) images | 4,220 |
-| 300 in-domain + 300 hard-neg | 6,609 (+57%) |
-
-### Fix
-
-Calibrate with **in-domain images only**. Even when your training
-set includes hard-negative images, your calibration set should not.
-
-```bash
-# Eggs example: hardneg dir is for training, calib dir is in-domain only
-python3 scripts/host/_train_yolov11.py \
-    --data data/datasets/eggs_hardneg/data.yaml \   # mixed training data
-    ...
-
-NUM_CLASSES=1 bash scripts/host/02_compile.sh yolov11 yolov11n \
-    data/weights/yolo11n_eggs_dpu.pt \
-    data/calib/                                      # in-domain only!
-```
-
-### Prevention
-
-Treat calibration set composition as a hyperparameter. Measure int8
-deployment quality with in-domain vs mixed calibration; pick whichever
-performs better on real test imagery. The default should be
-in-domain only.
-
-For per-channel-quantization DPUs (newer Versal AI Edge devices,
-possibly future Kria revisions), this constraint may not apply. The
-per-tensor scale limitation is specific to DPUCZDX8G_ISA1 (KV260
-B4096).
-
----
-
-## `vai_q_onnx` crashes in `align_concat` on YOLOv11
-
-### Symptom
-
-You try the alternative ONNX-based PTQ path via `vai_q_onnx`:
-
-```bash
-bash scripts/host/_quantize_onnx_yolov11.sh \
-    out/yolov11n/yolov11n.onnx \
-    out/yolov11n/yolov11n_quant.onnx
-```
-
-It crashes during quantization with:
-
-```
-TypeError: '<' not supported between instances of 'NoneType' and 'int'
-  at: vai_q_onnx/quantize/refine_model.py:..., in pass_align_concat
-```
-
-### Cause
-
-`vai_q_onnx 1.14.0`'s `align_concat` refinement pass assumes all
-Concat-node inputs have inferred shapes available. In our YOLOv11
-graph (which combines a custom `C2PSA_DPU` attention block, stripped
-detect head, and NHWC permute wrapper), some Concat inputs end up
-with `None` in their shape inference. The refinement pass then tries
-to compare `None < int` and crashes.
-
-The failure is independent of:
-- `per_channel` (True or False)
-- `quant_format` (`VitisQuantFormat.FixNeuron` or `VitisQuantFormat.QDQ`)
-- `N_CALIB` value (tested 50, 200, 600)
-- `optimize_model` (True or False)
-
-### Fix
-
-There is no workaround in `vai_q_onnx 1.14.0` for our YOLOv11
-architecture. Use the default NNDCT path instead:
-
-```bash
-# Default path; works correctly
-NUM_CLASSES=1 bash scripts/host/02_compile.sh yolov11 yolov11n \
-    data/weights/yolo11n_eggs_dpu.pt data/calib/
-```
-
-The ONNX export script (`_export_onnx_yolov11.sh`) still works and is
-useful for other purposes (e.g., evaluating the model in
-onnxruntime, validating the graph topology). Only the PTQ step is
-blocked.
-
-### Prevention
-
-The DPU hardware uses per-tensor activation scales — the main
-theoretical advantage of the ONNX path (per-channel weight
-quantization) is negated by the hardware constraint anyway. For this
-DPU, the NNDCT path is the appropriate choice.
-
-A future `vai_q_onnx` release may fix the `align_concat` issue. The
-ONNX export script is retained in-tree so this path can be revisited
-without redoing the graph-preparation work.
-
----
-
-## DPU resource lock — `xrt_device_handle_imp` Check failed
-
-### Symptom
-
-You try to launch a notebook or run an inference script on the Kria
-and get:
-
-```
-F0517 23:14:07.123456  4567 xrt_device_handle_imp.cpp:101]
-Check failed: r == 0 (1 vs. 0) cannot set read range!
-*** Check failure stack trace: ***
-```
-
-The Kria's DPU appears locked; subsequent attempts produce the same
-error.
-
-### Cause
-
-A previous Python process holding the DPU device handle exited
-ungracefully (e.g., kernel killed by OOM, notebook kernel crashed
-without proper cleanup, ssh disconnected during inference). The XRT
-runtime considers the device still claimed.
-
-### Fix
-
-Kill any stale Python processes, then retry:
-
-```bash
-# On Kria
-sudo pkill -f 'python3.*xmodel'
-sudo pkill -f 'jupyter'
-
-# If that's not enough, force-unload and reload the DPU overlay
-sudo xmutil unloadapp
-sleep 2
-
-# Now retry your inference / notebook launch
-sudo bash scripts/kria/run_live.sh yolov11n
-```
-
-If the issue persists, reboot the Kria:
-
-```bash
-sudo reboot
-```
-
-The systemd unit will reapply tuning after reboot.
-
-### Prevention
-
-Always exit Python sessions gracefully. In notebooks, use "Kernel →
-Shutdown" rather than just closing the browser tab. For long-running
-scripts, install a SIGTERM handler that releases the DPU runner:
-
-```python
-import signal
-def cleanup(*args):
-    runner.close()  # or del runner; del overlay
-    sys.exit(0)
-signal.signal(signal.SIGTERM, cleanup)
-```
-
-The PYNQ-DPU library should auto-release on Python interpreter exit,
-but in practice it relies on Python's garbage collection running
-before XRT's device-handle finalizer — which doesn't always happen on
-abnormal termination.
-
----
-
-## Vitis-AI container OOM during PTQ calibration
-
-### Symptom
-
-Inside the Vitis-AI container, the NNDCT quantize step (`_quantize.py`
-or the ONNX `quantize_static`) is killed by the kernel with no error:
-
-```
-[*] Running NNDCT calibration with N_CALIB=200 images...
-Killed
-```
-
-`dmesg` on the host shows:
-
-```
-Out of memory: Killed process 12345 (python3) ...
-```
-
-### Cause
-
-NNDCT loads the entire model graph plus all calibration activations
-into memory for analysis. For YOLOv11 at imgsz=640 with N_CALIB=200,
-peak memory is ~14 GB. If the container has less, or if the host has
-less free RAM than the container's limit, the kernel OOM-killer fires.
-
-### Fix
-
-Reduce `N_CALIB`:
-
-```bash
-# Default
-N_CALIB=200 bash scripts/host/02_compile.sh yolov11 yolov11n ...
-
-# Reduced for memory-constrained environments
-N_CALIB=50 bash scripts/host/02_compile.sh yolov11 yolov11n ...
-```
-
-`N_CALIB=50` typically uses ~4-6 GB and works on 16 GB hosts.
-Quantization quality is slightly worse than at `N_CALIB=200` but
-usually within 1-2% of the same int8 FP count.
-
-If the host has more RAM but the container is capped, increase the
-container's memory limit in `02_compile.sh` (look for `--memory` or
-`-m` in the `docker run` invocation).
-
-### Prevention
-
-Monitor RAM during compile:
-
-```bash
-# In a separate terminal while 02_compile.sh runs:
-watch -n 1 'free -h; docker stats --no-stream'
-```
-
-If RAM is consistently >80% used during the NNDCT step, lower N_CALIB
-preemptively rather than waiting for the OOM-killer.
-
-For YOLOv5 at imgsz=320, memory usage is much lower (~2 GB even at
-N_CALIB=500); the constraint is specific to larger YOLOv11 input
-sizes.
-
----
-
-## Pip install fails as non-root inside the Vitis-AI conda env
-
-### Symptom
-
-Inside the Vitis-AI container:
-
-```
-$ pip install onnx onnxruntime
-ERROR: Could not install packages due to an OSError: [Errno 13]
-Permission denied: '/opt/vitis_ai/conda/envs/vitis-ai-pytorch/lib/python3.7/site-packages/...'
-```
-
-### Cause
-
-The Vitis-AI container's conda environment is owned by root. The
-container's default user is `vitis-ai-user` (UID 1000) for security
-reasons. Pip can't write to the system-wide site-packages without
-sudo, but `pip install --user` fails for other reasons (see "Numpy
-import error" below).
-
-### Fix
-
-Two options:
-
-**Option A: install as root via sudo inside the container**
-
-```bash
-docker exec -u root <container-id> bash -lc '
-    source /opt/vitis_ai/conda/etc/profile.d/conda.sh
-    conda activate vitis-ai-pytorch
-    pip install onnx onnxruntime
-'
-```
-
-**Option B: build a derived image with the packages baked in (recommended for repeatable workflows)**
-
-```dockerfile
-# Dockerfile.eggs
-FROM xilinx/vitis-ai-onnx-cpu:latest
-USER root
-RUN source /opt/vitis_ai/conda/etc/profile.d/conda.sh && \
-    conda activate vitis-ai-pytorch && \
-    pip install onnx onnxruntime onnx-simplifier
-USER vitis-ai-user
-```
-
-Then build and use the derived image:
-
-```bash
-docker build -f Dockerfile.eggs -t vitis-ai-onnx-cpu:eggs .
-# Use it in 02_compile.sh by setting VAI_IMAGE=vitis-ai-onnx-cpu:eggs
-```
-
-This is what the v0.10 ONNX investigation used (the derived image
-`vitis-ai-onnx-cpu:eggs` exists on the host with `vai_q_onnx`'s
-runtime dependencies pre-installed).
-
-### Prevention
-
-Treat the Vitis-AI base images as read-only and build derived images
-for any persistent package needs. This avoids both the permission
-issue and the partial-install corruption problem below.
-
----
-
-## Numpy import error after partial pip install in the container
-
-### Symptom
-
-After a `pip install` that failed midway (e.g., interrupted by Ctrl-C,
-or hit the permission error above and was retried with `--user`),
-imports start failing:
-
-```python
->>> import numpy
-ImportError: numpy.core.multiarray failed to import
-RuntimeError: module compiled against API version 0x10 but this version of numpy is 0xf
-```
-
-### Cause
-
-Pip with `--user` writes to `~/.local/lib/python3.7/site-packages/`.
-If this path appears earlier than the conda env in `sys.path`, a
-partial numpy install in `--user` shadows the working numpy in the
-conda env. The mismatch in C-extension API versions breaks the import.
-
-### Fix
-
-```bash
-# Inside the container, as the user who ran the bad install:
-rm -rf ~/.local/lib/python3.7/site-packages/numpy*
-rm -rf ~/.local/lib/python3.7/site-packages/scipy*  # often co-corrupted
-```
-
-Then verify:
-
-```bash
-python3 -c "import numpy; print(numpy.__file__)"
-# Should print a path inside /opt/vitis_ai/conda/...
-```
-
-If you need additional packages, use one of the methods in "Pip
-install fails as non-root" above (don't use `--user` again).
-
-### Prevention
-
-Never use `pip install --user` inside the Vitis-AI container. Either
-install as root via `docker exec -u root`, or build a derived image
-with the packages pre-installed.
-
----
-
-## `measure_fps_kria.py` hardcoded to yolov11n
-
-### Symptom
-
-You're measuring FPS for `yolov11s` and the output shows yolov11n
-input dimensions / spec parameters, even though the xmodel path
-clearly points to a yolov11s file.
-
-### Cause
-
-The original `measure_fps_kria.py` script had `spec_name = "yolov11n"`
-hardcoded near the top, even though the xmodel path was a CLI
-argument. The spec was used to size preprocessor buffers and to drive
-the decoder.
-
-For yolov11n and yolov11s, this is mostly harmless because the spec
-parameters (family, imgsz, nc, reg_max) are identical for both. But
-the output report is misleading and the spec is wrong-by-name.
-
-### Fix
-
-Patch the script to derive `spec_name` from the xmodel path:
-
-```python
-# At the top of measure_fps_kria.py
-from pathlib import Path
-spec_name = Path(XMODEL).parent.name   # e.g. "yolov11s" from /path/yolov11s/yolov11s_kv260.xmodel
-spec = get_spec(spec_name)
-```
-
-This works because the sync layout always uses
-`/home/ubuntu/xmodels_vai35/<variant>/<variant>_kv260.xmodel`.
-
-### Prevention
-
-When adding new variants, audit all standalone measurement scripts on
-the Kria for hardcoded variant names. The repo's `run_live.sh` and
-notebooks read `LPR_VARIANT` from the environment, but ad-hoc
-benchmark scripts (`measure_fps_kria.py`, `benchmark_fps.py`,
-`sanity_*.py`) tend to hardcode.
-
-A more robust pattern: always derive variant from the xmodel path,
-not from a hardcoded constant.
-
----
-
-## `run_live.sh` rejects new variants with "unknown variant"
-
-### Symptom
-
-You add a new variant (e.g., `yolov11s`) to the registry, sync its
-xmodel to the Kria, and try to launch:
-
-```bash
-$ sudo bash scripts/kria/run_live.sh yolov11s
-[FAIL] Unknown variant: yolov11s
-```
-
-### Cause
-
-`run_live.sh` has a `case` statement that maps variant names to
-notebook paths. When a new variant is added to the registry, the
-script's `case` block needs an explicit entry — it doesn't read the
-registry.
-
-### Fix
-
-Edit `scripts/kria/run_live.sh`, find the variant dispatch (search
-for "Unknown variant"), and add the new variant to the case branch
-that uses the right notebook:
-
-```bash
-case "${VARIANT}" in
-    yolov5n|yolov5s)
-        NOTEBOOK="${NOTEBOOK:-notebooks/02_deploy_text.ipynb}"
-        ;;
-    yolov11n|yolov11s)              # add new variant here
-        NOTEBOOK="notebooks/eggs/05_deploy_visual.ipynb"
-        ;;
-    *)
-        log_err "Unknown variant: ${VARIANT}"
-        exit 1
-        ;;
+FAMILY=$(python3 -c "
+import sys
+sys.path.insert(0, '$REPO_ROOT')
+from lpr_pipeline.shared.models import get_spec
+print(get_spec('$VARIANT').family)
+")
+
+case "$FAMILY" in
+    yolov5)  ... ;;
+    yolov11) ... ;;
+    yolox)   ... ;;
 esac
 ```
 
-Then re-sync the script to the Kria:
-
-```bash
-# From laptop
-rsync -av scripts/kria/run_live.sh ubuntu@<kria-ip>:/home/ubuntu/KriaKv260_Model_Compiler/scripts/kria/
-```
-
-### Prevention
-
-When adding a new variant, do the registry update and the
-`run_live.sh` update in the same commit. This is documented in
-[USAGE.md §10](./USAGE.md#10-deep-dive-adding-a-new-yolov5-variant)
-("Deep dive: adding a new variant").
-
-A more robust pattern would be to read the registry's `family` field
-in `run_live.sh` and dispatch by family rather than by variant name.
-TODO: refactor `run_live.sh` to call `python3 -c "from
-lpr_pipeline.shared.models import get_spec; print(get_spec('...').family)"`
-once and dispatch on the result.
+Adding a new variant within an existing family (e.g., `yolov5m`,
+`yolov11m`) requires only a registry entry and a weights file. Adding
+a new family (e.g., a hypothetical `yolov12`) still requires a new
+`case` arm because the family-to-notebook mapping is genuinely
+family-specific. The error messages distinguish "variant not in
+registry" from "family has no notebook" so the right fix is obvious.
 
 ---
 

@@ -115,3 +115,8 @@ data/calib_v4_*/
 
 # v0.10: allow .pt weight files (override earlier data/weights/* rule)
 !data/weights/*.pt
+
+# Editor / patch backups (created by manual rollback workflows)
+*.bak
+*.backup
+*~

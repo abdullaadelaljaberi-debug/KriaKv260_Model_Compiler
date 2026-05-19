@@ -1,5 +1,104 @@
 # Changelog
 
+## v0.11.0 — Capacity vs architecture finding + run_live.sh family dispatch (2026-05-19)
+
+### Added
+
+- **`yolov5s_eggs` variant registered** (family=`yolov5`, imgsz=640,
+  reg_max=16, status=`full`). YOLOv5s (Ultralytics u-variant, 9.1M
+  parameters) trained on the same eggs+hardneg dataset as the YOLOv11
+  variants at imgsz=640. Sits between yolov11n (3.6M) and yolov11s (13.5M)
+  in capacity, enabling a fair architecture-generation comparison
+  isolated from capacity. v5 needs no training-time DPU surgery — only
+  the standard SiLU → LeakyReLU swap at compile time.
+- **`data/weights/yolo5s_eggs_dpu.pt`** — trained float checkpoint
+  (50 epochs, batch 16, imgsz=640 on eggs+hardneg). Float mAP@0.5 = 0.995,
+  float eggs-valid F1 = 0.999.
+- **`scripts/host/_eval_eggs_validset.py`** — host-side float evaluation
+  on the eggs validation set with IoU-based TP/FP/FN matching. Runs all
+  three eggs models (yolov11n, yolov5s_eggs, yolov11s) and reports
+  precision/recall/F1 at conf thresholds 0.5, 0.7, 0.85.
+
+### Changed
+
+- **`scripts/kria/run_live.sh` refactored to family-based dispatch.**
+  Replaced the hardcoded variant whitelist (`yolov5n|yolov5s)` and
+  `yolov11n|yolov11s)`) with a registry lookup that resolves
+  `variant → family` via `lpr_pipeline.shared.models.get_spec()`, then
+  dispatches on family. Any variant added to the registry now works
+  with `run_live.sh` automatically — no script edit required. Adding a
+  new family (not just a new variant within an existing family) still
+  needs a new `case` arm because the family-to-notebook mapping is
+  genuinely family-specific. Error messages distinguish "variant not
+  in registry" from "family has no notebook." Closes the documentation-
+  code gap that USAGE.md §10 had relied on.
+- **`docs/YOLOV11.md` "Capacity vs quantization" section completely
+  rewritten** as "Capacity vs architecture — what int8 quantization
+  actually depends on." The v0.10 conclusion ("capacity is the dominant
+  lever") is corrected based on the v0.11 yolov5s_eggs experiment.
+  New findings:
+  1. **Capacity alone is insufficient.** yolov5s_eggs at 9.1M params
+     (2.5× yolov11n's capacity) is *worse* than yolov11n on every int8
+     metric (eggs F1 0.673 vs 0.863, eggs FPs 485 vs 160, eggs FNs
+     616 vs 300).
+  2. **Architecture-family matters more than capacity.** Both YOLOv11
+     variants degrade ~14-16 F1 points float→int8; YOLOv5s degrades
+     32.6 points despite mid-tier capacity.
+  3. **Capacity helps within a family.** yolov11s vs yolov11n: -67%
+     industrial FPs, +4.3pp eggs recall.
+  Mechanism (interpretation): C2PSA_DPU's HardSigmoid gating produces
+  bounded activation distributions that quantize cleanly under per-tensor
+  scales. YOLOv5u's pure-conv stack triggers the `RuntimeWarning:
+  overflow encountered in exp` (sigmoid saturation) in the decoder.
+  The v11 architecture surgery isn't just a porting cost — it provides
+  genuine int8 robustness.
+
+### Fixed
+
+- **`docs/TROUBLESHOOTING.md` deduplicated.** A "to-merge" patch
+  document had been accidentally appended in addition to its merged
+  content, then re-pasted at the bottom — producing 12 duplicate
+  section headings (44 total, 32 unique). Restored to a single
+  source-of-truth: 32 sections, 0 duplicates, 1,885 lines (from 2,606).
+  The TOC now includes the v0.8-v0.10 section list. No content was
+  lost; only redundant copies were removed.
+- **"459-image industrial test set" corrected to "57-image"** across
+  YOLOV11.md, CHANGELOG.md, KRIA_SETUP.md. The actual industrial FP
+  test set is `fp_test_set/{test_images,valid_images}` = 19 + 38 = 57
+  images. The 459 number traced to an earlier transcript error.
+- **`TROUBLESHOOTING.md` "`run_live.sh` rejects new variants" entry
+  marked RESOLVED in v0.11.** Historical Symptom/Cause/Fix content
+  preserved for users on older versions, with a new Resolution section
+  describing the family-dispatch refactor.
+
+### Documentation
+
+- **`README.md` Performance table updated** with yolov5s_eggs row
+  showing F1 0.673 (int8 eggs) and the architecture-comparison context.
+  Version stamp bumped to v0.11.0.
+- **`docs/MODELS.md`** family table and YOLOv5 variants list now
+  include yolov5s_eggs with link to the YOLOV11.md "Capacity vs
+  architecture" study.
+
+### Repository hygiene
+
+- **`.gitignore`**: added `*.bak`, `*.backup`, `*~` patterns to keep
+  editor / patch backups out of the repository.
+
+### Measurements summary
+
+Full int8 vs float comparison on KV260 B4096 (DPUCZDX8G_ISA1, VAI 3.5),
+on the eggs validation set (32 images, 1,749 ground-truth eggs) and the
+57-image industrial test set:
+
+| Model | Params | Float eggs F1 | Int8 eggs F1 | Int8 industrial FPs @ 0.85 | DPU latency |
+|---|---:|---:|---:|---:|---:|
+| yolov11n | 3.6M | 0.998 | 0.863 | 6,609 | 38.8 ms |
+| yolov5s_eggs | 9.1M | 0.999 | **0.673** | 5,690 | 49.0 ms |
+| yolov11s | 13.5M | 0.998 | **0.842** | **2,172** | 58.2 ms |
+
+---
+
 ## v0.10.0 — yolov11s variant + capacity-vs-quantization study (2026-05-19)
 
 ### Added
@@ -15,7 +114,7 @@
   Tracking v8i") as labeled empty frames. Trained both yolov11n and
   yolov11s on the combined 1,335-image dataset (933 eggs + 402
   hard-negatives). The float `.pt` model now produces **zero false
-  positives** on a held-out 459-image industrial test set at the
+  positives** on a held-out 57-image industrial test set at the
   deployment threshold.
 
 - **`scripts/host/_export_onnx_yolov11.py` + `.sh`** — PyTorch → clean

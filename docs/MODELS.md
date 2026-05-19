@@ -6,7 +6,7 @@ of differences in quantization conventions, head structure, and decoder logic.
 
 | Family | Variants | Status | Decoder | Notes |
 |---|---|---|---|---|
-| **YOLOv5** (Ultralytics u-variant) | `yolov5n`, `yolov5s` | ✅ full | DFL anchor-free | Single DPU subgraph; uses `pynq_dpu.DpuOverlay.runner` |
+| **YOLOv5** (Ultralytics u-variant) | `yolov5n`, `yolov5s`, `yolov5s_eggs` | ✅ full | DFL anchor-free | Single DPU subgraph; uses `pynq_dpu.DpuOverlay.runner` |
 | **YOLOv11** (Ultralytics) | `yolov11n`, `yolov11s` | ✅ full | DFL anchor-free | Requires architectural surgery at training time; see `docs/YOLOV11.md`. Single DPU subgraph after surgery. |
 | **YOLOX** (Megvii) | `yolox_tiny`, `yolox_nano` | ✅ full | sigmoid + grid | Multi-DPU-subgraph; uses `vitis_ai_library.GraphRunner` |
 | **YOLOv7** (WongKinYiu) | `yolov7-tiny` | 🚧 stub | anchor-based | Compile path scaffolded; family-specific code TBD |
@@ -27,6 +27,10 @@ of differences in quantization conventions, head structure, and decoder logic.
 - **Variants in this pipeline**:
   - `yolov5n` — input 320×320, ~4 GMACs, fastest (~12 ms inference on KV260)
   - `yolov5s` — input 320×320, ~7 GMACs, ~19 ms inference
+  - `yolov5s_eggs` — input 640×640, ~9.1M params, trained on eggs+hardneg for the
+    capacity-vs-architecture comparison (see `docs/YOLOV11.md` § "Capacity vs
+    architecture"). ~49 ms inference, 20.4 FPS. Demonstrates that within-family
+    architectural choices matter more than capacity for int8 robustness.
 - **Head**: anchor-free with Distribution Focal Loss (DFL); stripped for VAI
   (no inline decode/NMS — done on CPU after DPU)
 - **Output channels per cell**: `4*reg_max + nc` where `reg_max=16`
