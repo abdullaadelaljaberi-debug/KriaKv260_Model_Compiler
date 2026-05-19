@@ -8,6 +8,7 @@
 #
 # Example:
 #   bash scripts/kria/run_live.sh yolov5n
+#   bash scripts/kria/run_live.sh yolov11n
 #
 # After launch, follow the printed URL on your laptop's browser.
 #
@@ -33,15 +34,20 @@ Launch a Jupyter server with one of the live-demo notebooks configured for
 the given variant.
 
 Arguments:
-  variant      One of the variants compiled and synced: yolov5n, yolov5s,
-               yolox_tiny, yolox_nano.
-  mode         'text' (default) or 'visual'.
-               - text:   02_deploy_text.ipynb   — max-throughput, HTML status
-                                                  block only, no per-frame rendering.
-                                                  Use for benchmarks.
-               - visual: 03_deploy_visual.ipynb — live video preview + bounding
-                                                  boxes + interactive sliders.
-                                                  Use for demos and tuning.
+  variant      One of the variants compiled and synced:
+               - yolov5n, yolov5s (LPR demo notebooks)
+               - yolov11n         (egg detection demo notebook)
+               - yolox_tiny, yolox_nano (deferred — needs GraphRunner notebook)
+  mode         For yolov5* variants: 'text' (default) or 'visual'.
+                 - text:   02_deploy_text.ipynb   — max-throughput, HTML status
+                                                    only, no per-frame rendering.
+                                                    Use for benchmarks.
+                 - visual: 03_deploy_visual.ipynb — live video preview + bounding
+                                                    boxes + interactive sliders.
+                                                    Use for demos and tuning.
+               For yolov11n: mode is ignored; always launches
+                 eggs/05_deploy_visual.ipynb (interactive notebook with
+                 USB camera / video file / image folder selector).
 
 By default Jupyter binds to 0.0.0.0:8888 — reachable from any device on
 your LAN. Open the URL Jupyter prints (it includes a single-use token) in
@@ -64,12 +70,41 @@ EOF
 VARIANT="$1"
 MODE="${2:-text}"
 
-case "$MODE" in
-    text)   NOTEBOOK_FILENAME="02_deploy_text.ipynb"   ;;
-    visual) NOTEBOOK_FILENAME="03_deploy_visual.ipynb" ;;
+# ─── Dispatch variant → notebook ───────────────────────────────────────────
+# Different variants use different notebooks. yolov5* uses the LPR notebooks
+# (text/visual); yolov11n uses the eggs notebook (interactive input selector
+# so the user picks camera/video/folder in-notebook).
+case "$VARIANT" in
+    yolov5n|yolov5s)
+        case "$MODE" in
+            text)   NOTEBOOK_FILENAME="02_deploy_text.ipynb"   ;;
+            visual) NOTEBOOK_FILENAME="03_deploy_visual.ipynb" ;;
+            *)
+                log_err "Unknown mode for $VARIANT: $MODE (expected 'text' or 'visual')"
+                usage
+                ;;
+        esac
+        ;;
+    yolov11n|yolov11s)
+        NOTEBOOK_FILENAME="eggs/05_deploy_visual.ipynb"
+        if [[ "$MODE" != "text" ]]; then
+            # MODE was explicitly passed but we ignore it for yolov11n.
+            log_info "  (note: mode '$MODE' ignored for yolov11n; eggs notebook handles its own input selection)"
+        fi
+        ;;
+    yolox_tiny|yolox_nano)
+        log_err "$VARIANT requires a multi-DPU-subgraph notebook (GraphRunner-based),"
+        log_err "which is not yet implemented. Use the benchmark notebook for these"
+        log_err "variants until the live-demo path is added."
+        exit 1
+        ;;
     *)
-        log_err "Unknown mode: $MODE (expected 'text' or 'visual')"
-        usage
+        log_err "Unknown variant: $VARIANT"
+        log_err "Supported variants:"
+        log_err "  yolov5n, yolov5s  — LPR demo (text/visual)"
+        log_err "  yolov11n          — egg detection demo"
+        log_err "  yolox_*           — not yet implemented for live demo"
+        exit 1
         ;;
 esac
 
@@ -109,10 +144,12 @@ NOTEBOOK="$REPO_ROOT/notebooks/$NOTEBOOK_FILENAME"
 if [[ ! -f "$NOTEBOOK" ]]; then
     log_err "Notebook not found: $NOTEBOOK"
     log_err ""
-    log_err "Make sure you've pulled the latest repo. Both notebooks ship in"
-    log_err "Pass 6:"
-    log_err "    notebooks/02_deploy_text.ipynb   (max throughput)"
-    log_err "    notebooks/03_deploy_visual.ipynb (live video + sliders)"
+    log_err "Make sure you've pulled the latest repo."
+    log_err ""
+    log_err "Available notebooks ship in v0.7 / v0.8 / v0.9:"
+    log_err "    notebooks/02_deploy_text.ipynb        (yolov5* max throughput)"
+    log_err "    notebooks/03_deploy_visual.ipynb      (yolov5* visual)"
+    log_err "    notebooks/eggs/05_deploy_visual.ipynb (yolov11n eggs demo)"
     log_err ""
     log_err "From your laptop:"
     log_err "    git pull origin main"
@@ -120,10 +157,11 @@ if [[ ! -f "$NOTEBOOK" ]]; then
     log_err "    cd ~/KriaKv260_Model_Compiler && git pull"
     exit 1
 fi
-log_ok "notebook  : $NOTEBOOK ($MODE mode)"
+log_ok "notebook  : $NOTEBOOK"
 
-# 3. Camera available?
-if [[ ! -e /dev/video0 ]]; then
+# 3. Camera available? Only warn for yolov5* (LPR notebook assumes camera);
+# the eggs notebook lets the user pick non-camera input modes interactively.
+if [[ "$VARIANT" == yolov5* ]] && [[ ! -e /dev/video0 ]]; then
     log_warn "  No /dev/video0 — plug in the camera before running the notebook."
 fi
 

@@ -103,6 +103,16 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
               "Validated on the egg detection task (mAP@0.5 ≈ 0.99).",
     ),
 
+    "yolov11s": ModelSpec(
+        name="yolov11s", family="yolov11",
+        imgsz=640, reg_max=16, status="full",
+        notes="YOLOv11s (Ultralytics; anchor-free DFL, ~9.4M params after "
+              "DPU-friendly architecture surgery). Same DPU-friendly "
+              "modifications as yolov11n (C2PSA → C2PSA_DPU, DWConv → "
+              "Conv). 2.6x more parameters than yolov11n; investigates "
+              "whether higher model capacity is more robust to int8 "
+              "quantization noise for fine-grained discrimination tasks.",
+    ),
     # ── YOLOX (Megvii; anchor-free, decoupled head) ─────────────────────────
     "yolox_tiny": ModelSpec(
         name="yolox_tiny", family="yolox",
