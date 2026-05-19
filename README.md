@@ -89,6 +89,9 @@ If you're starting from a fresh Kria SD card, see
 | [**docs/YOLOV11.md**](docs/YOLOV11.md) | YOLOv11-specific workflow + architecture rationale + capacity findings |
 | [**docs/TROUBLESHOOTING.md**](docs/TROUBLESHOOTING.md) | Every issue we've hit, with forensic detail |
 | [**docs/CHANGELOG.md**](docs/CHANGELOG.md) | Version history |
+| [**docs/vai35_benchmark_report.md**](docs/vai35_benchmark_report.md) | VAI 3.5 model zoo benchmark results (33 models, current reference) |
+| [**docs/vai25_vs_vai35_comparison.md**](docs/vai25_vs_vai35_comparison.md) | Cross-runtime comparison: VAI 2.5 → 3.5 reproducibility + methodology evolution |
+| [**docs/vai25_benchmark_report.md**](docs/vai25_benchmark_report.md) | VAI 2.5 benchmark results (historical baseline, v0.4 era) |
 
 ## Performance (as of `v0.10.0`, 2026-05)
 

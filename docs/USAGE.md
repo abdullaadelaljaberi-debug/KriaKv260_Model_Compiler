@@ -479,8 +479,10 @@ docs/
   DATASET.md                     ← ImageNet benchmark sample setup
   TROUBLESHOOTING.md             ← every issue we've hit, with detail
   CHANGELOG.md                   ← version history
-  v0.7.3-patchnote.md            ← historical VAI 3.5 benchmark notes
-  vai35_benchmark_report.md      ← historical benchmark results
+  vai35_benchmark_report.md      ← VAI 3.5 model zoo benchmark results (current reference)
+  vai25_benchmark_report.md      ← VAI 2.5 historical baseline (v0.4 era)
+  vai25_vs_vai35_comparison.md   ← cross-runtime comparison and methodology evolution
+  v0.7.3-patchnote.md            ← decoder-bug forensics from the 3.5 re-evaluation
 
 data/                            ← calibration + eval images (mostly gitignored)
   weights/                       ← trained .pt files (tracked since v0.10)
