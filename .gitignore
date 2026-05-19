@@ -104,3 +104,14 @@ notebooks/Dataset/
 notebooks/full_benchmark_results.csv
 notebooks/benchmark_report.md
 notebooks/coco_map_results.csv
+# ─────────────────────────────────────────────────────────────
+# v0.10: hard-neg work
+# ─────────────────────────────────────────────────────────────
+# New calib subdirs (large image sets, regeneratable from source datasets)
+data/calib_lpr_backup/
+data/calib_v2_hardneg/
+data/calib_v3_*/
+data/calib_v4_*/
+
+# v0.10: allow .pt weight files (override earlier data/weights/* rule)
+!data/weights/*.pt
