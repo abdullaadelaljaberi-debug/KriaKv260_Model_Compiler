@@ -342,7 +342,7 @@ Compile time depends on whether you have the GPU VAI image:
 ### Step 3: sync to Kria
 
 ```bash
-bash scripts/host/03_sync_to_kria.sh ubuntu@10.42.0.189 yolov11n   # or yolov11s
+bash scripts/host/03_sync_to_kria.sh ubuntu@<kria-ip> yolov11n   # or yolov11s
 ```
 
 This copies the xmodel to

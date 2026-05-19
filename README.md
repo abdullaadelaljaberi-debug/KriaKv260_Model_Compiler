@@ -143,11 +143,13 @@ If you're starting from a fresh Kria SD card, see
 
 | Doc | When to read |
 |---|---|
-| [**docs/KRIA_SETUP.md**](docs/KRIA_SETUP.md) | One-time install on a fresh SD card |
+| [**docs/KRIA_SETUP.md**](docs/KRIA_SETUP.md) | One-time install on a fresh SD card (this repo's automated workflow — **start here** for the YOLOv5/YOLOv11 path) |
+| [**docs/KRIA_QUICKSTART.md**](docs/KRIA_QUICKSTART.md) | Generic vendor-tool reference: pulling AMD's Docker images and running quantization by hand (for one-off models outside this repo's automated path) |
 | [**docs/HOST_SETUP.md**](docs/HOST_SETUP.md) | One-time install on your laptop (Vitis AI Docker, NVIDIA, etc.) |
 | [**docs/USAGE.md**](docs/USAGE.md) | Daily workflow + adding new variants/families |
 | [**docs/MODELS.md**](docs/MODELS.md) | Supported model families + how to add new ones |
 | [**docs/YOLOV11.md**](docs/YOLOV11.md) | YOLOv11-specific workflow + architecture rationale + capacity findings |
+| [**docs/DATASET.md**](docs/DATASET.md) | ImageNet sample prep for the VAI 3.5 model zoo benchmark |
 | [**docs/TROUBLESHOOTING.md**](docs/TROUBLESHOOTING.md) | Every issue we've hit, with forensic detail |
 | [**docs/CHANGELOG.md**](docs/CHANGELOG.md) | Version history |
 | [**docs/vai35_benchmark_report.md**](docs/vai35_benchmark_report.md) | VAI 3.5 model zoo benchmark results (33 models, current reference) |
@@ -219,10 +221,11 @@ See [USAGE.md §12](docs/USAGE.md#12-whats-where) for a fuller tour.
 |---|---|---|---:|---|
 | yolov5n | YOLOv5 | ✓ validated end-to-end | 7.74 | License plate demo (60 FPS camera-bound) |
 | yolov5s | YOLOv5 | ✓ compiles + runs | ~15-20 (est.) | Not benchmarked live |
+| yolov5s_eggs | YOLOv5 | ✓ validated end-to-end | ~49 | Architecture comparison (v0.11); 9.1M params, int8 eggs F1 0.673 |
 | yolov11n | YOLOv11 | ✓ validated end-to-end | ~38 | Egg detection demo; DPU-friendly surgery applied |
-| yolov11s | YOLOv11 | ✓ validated end-to-end | ~58 | Capacity-vs-quantization study (v0.10) |
-| yolox_tiny | YOLOX | spec only | — | Decoder + runner branch not yet implemented |
-| yolox_nano | YOLOX | spec only | — | Same |
+| yolov11s | YOLOv11 | ✓ validated end-to-end | ~58 | 3.7× params vs yolov11n, 67% fewer int8 FPs, F1 0.842 |
+| yolox_tiny | YOLOX | ✓ compiles + runs | ~92 | Multi-DPU-subgraph runner (4 subgraphs); uses vitis_ai_library.GraphRunner |
+| yolox_nano | YOLOX | ✓ compiles + runs | ~680 | Multi-DPU-subgraph runner (34 subgraphs); DWConv-heavy → graph fragments |
 
 Adding a new variant within an existing family: edit
 [`lpr_pipeline/shared/models.py`](lpr_pipeline/shared/models.py), drop

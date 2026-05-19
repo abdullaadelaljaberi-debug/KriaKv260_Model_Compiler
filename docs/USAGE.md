@@ -331,22 +331,37 @@ Suppose you train a `yolov5m` for LPR and want it in the pipeline.
 
 ### 10.1 Add the spec
 
-Edit [`lpr_pipeline/shared/models.py`](../lpr_pipeline/shared/models.py):
+Edit [`lpr_pipeline/shared/models.py`](../lpr_pipeline/shared/models.py).
+The `ModelSpec` dataclass describes the variant's *identity* — the
+input size, number of classes, head shape, and family-specific flags.
+The path to the `.pt` file itself is passed at compile time, not
+stored in the spec:
 
 ```python
 "yolov5m": ModelSpec(
-    name="yolov5m",
-    family="yolov5",
-    weights="models/yolov5m/training/weights/best.pt",
-    imgsz=320,
-    nc=1,
-    reg_max=16,
+    name="yolov5m", family="yolov5",
+    imgsz=320, nc=1, reg_max=16, status="full",
+    notes="YOLOv5m (Ultralytics; anchor-free DFL). ~7x yolov5n params; "
+          "DPU latency expected ~20-30 ms based on capacity scaling.",
 ),
 ```
 
-### 10.2 Make sure the weights exist
+The exact field set is defined by the `ModelSpec` dataclass at the
+top of `models.py` — `name`, `family`, `imgsz`, `nc`, `reg_max`,
+`status`, and a free-text `notes` field. There is no `weights` field;
+the weight file's path is passed to `02_compile.sh` as a CLI argument
+in §10.3.
 
-Put the trained `.pt` at `models/yolov5m/training/weights/best.pt`.
+### 10.2 Put the weights file in `data/weights/`
+
+```
+data/weights/yolov5m_lpr.pt
+```
+
+This path is conventional — it's what §10.3 will reference — but the
+compile script accepts any path you pass it. Keeping all checkpoints
+under `data/weights/` plays nicely with the `.gitignore` rule that
+tracks `*.pt` files there.
 
 ### 10.3 Compile
 

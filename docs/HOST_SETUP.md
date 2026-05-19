@@ -149,8 +149,9 @@ All ten checks should now show ✓.
 
 You need:
 
-1. A trained `.pt` checkpoint (from Ultralytics YOLOv5 or Megvii YOLOX,
-   for the two fully-supported families)
+1. A trained `.pt` checkpoint from one of the fully-supported families:
+   Ultralytics YOLOv5, Ultralytics YOLOv11 (requires DPU-friendly training —
+   see [YOLOV11.md](./YOLOV11.md)), or Megvii YOLOX.
 2. A folder of representative calibration images (≥100, ideally 200+)
 
 Place them in the repo:
