@@ -114,6 +114,29 @@ bash scripts/host/01_install_vai.sh
 This is a ~10 GB download. The script verifies the image works after
 pulling. Re-running it is safe — it skips the pull if already done.
 
+#### Optional: Vitis-AI ONNX image (for ONNX-based PTQ work)
+
+The default `vitis-ai-pytorch-cpu` image handles NNDCT (PyTorch-native)
+PTQ. For experimenting with the alternative ONNX-based PTQ via
+`vai_q_onnx`, pull the ONNX variant:
+
+```bash
+docker pull xilinx/vitis-ai-onnx-cpu:latest
+```
+
+This image is ~25 GB. **Not required** for the default compile pipeline
+(`scripts/host/02_compile.sh` uses NNDCT). Pull only if you're
+specifically investigating the ONNX path; see
+[YOLOV11.md "ONNX deployment path"](./YOLOV11.md#onnx-deployment-path--investigated-not-deployable)
+for the v0.10 outcome on that path.
+
+If you do work with the ONNX image and need additional Python packages
+(`onnx-simplifier`, `onnxruntime` with specific provider versions,
+etc.), build a derived image rather than pip-installing into the
+container at runtime. See
+[TROUBLESHOOTING.md → Pip install fails as non-root](./TROUBLESHOOTING.md#pip-install-fails-as-non-root-inside-the-vitis-ai-conda-env)
+for the rationale and a sample `Dockerfile`.
+
 ### 5. Verify everything
 
 ```bash

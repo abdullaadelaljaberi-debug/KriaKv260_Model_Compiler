@@ -434,10 +434,12 @@ ASCII overview of which scripts touch which parts of the system:
 ## 11. Validated performance
 
 The numbers below were measured on a freshly-installed system following
-this guide on **2026-05-10** at git tag **`v0.6-pass6-validated`**.
+this guide. Multiple datapoints reflect the validation runs across
+different release tags.
 
-### Pure inference benchmark (`02_deploy_text.ipynb` cell 6)
+### YOLOv5n (`v0.6-pass6-validated`, 2026-05-10)
 
+Pure inference benchmark (`02_deploy_text.ipynb` cell 6),
 yolov5n at imgsz=320 on KV260 B4096 DPU, VAI 3.5:
 
 | Stage | Mean (ms) | p50 | p95 | p99 |
@@ -449,7 +451,7 @@ yolov5n at imgsz=320 on KV260 B4096 DPU, VAI 3.5:
 
 **Throughput: 80.8 fps** (pure inference; no camera, no display).
 
-### Live demo (`02_deploy_text.ipynb` cell 14, 60-second run)
+Live demo (`02_deploy_text.ipynb` cell 14, 60-second run):
 
 | Metric | Value |
 |---|---|
@@ -469,11 +471,35 @@ yolov5n at imgsz=320 on KV260 B4096 DPU, VAI 3.5:
 **End-to-end: 60 fps live, camera-bound.** The DPU is idle ~30% of the
 time waiting for camera frames.
 
-> The preprocess at 3.84 ms ms includes a `canvas.astype(float32) / 255.0`
+> The preprocess at 3.84 ms includes a `canvas.astype(float32) / 255.0`
 > allocation that was later optimized via `np.multiply(..., out=...)`
 > (commit after the validation tag). With the optimization, preprocess
 > drops to ~1-1.5 ms and the theoretical max rises to ~110 fps.
 > End-to-end stays at 60 fps because the camera is the bottleneck.
+
+### YOLOv11n / YOLOv11s on eggs (`v0.10.0`, 2026-05-19)
+
+Synthetic-input benchmark on Kria (`benchmark_fps.py`, 100 iterations
+on a 640×640×3 random tensor):
+
+| Variant | DPU mean (ms) | End-to-end (FPS) |
+|---|---:|---:|
+| yolov11n | 38.8 | 25.76 |
+| yolov11s | 58.2 | 17.18 |
+
+Industrial test-set deployment (`measure_fps_kria.py` on a 459-image
+held-out industrial test set, eggs deployment scene):
+
+| Variant | Detection precision (eggs/img avg) | FPs @ conf=0.85 |
+|---|---:|---:|
+| yolov11n (post hard-neg, mixed calib) | 52.7 | 6,609 |
+| yolov11s (post hard-neg, in-domain calib) | 52.3 | **2,172** |
+
+The yolov11s variant produces **67% fewer false positives** at the
+deployment threshold with no detection precision loss. Throughput
+tradeoff: 33% drop. See
+[YOLOV11.md "Capacity vs quantization"](./YOLOV11.md#capacity-vs-quantization-the-v010-experiment)
+for the full study.
 
 ## 12. What can go wrong (and where to look)
 
@@ -487,6 +513,8 @@ time waiting for camera frames.
 | `ThreadedCamera()` raises `cannot open camera 0` | `/dev/video0` doesn't exist | Camera not enumerated; replug, see [TROUBLESHOOTING.md → camera missing](./TROUBLESHOOTING.md#camera-missing) |
 | `ThreadedCamera()` raises `no frames received in 3s` | Camera in wrong mode (YUYV instead of MJPG) | Re-run tuning, see [TROUBLESHOOTING.md → camera no frames](./TROUBLESHOOTING.md#camera-no-frames) |
 | Live demo runs but `inf_fps` is ~15 fps not ~60 | USB autosuspend re-enabled (kernel quirk) | Re-run `sudo bash scripts/kria/02_apply_tuning.sh` |
+| YOLOv11n int8 produces high FPs on cluttered backgrounds | int8 capacity floor reached for fine-grained discrimination | [YOLOV11.md → Capacity vs quantization](./YOLOV11.md#capacity-vs-quantization-the-v010-experiment); try yolov11s |
+| `run_live.sh yolov11s` says "unknown variant" | Stale script on Kria; needs the v0.10 case-statement | [TROUBLESHOOTING.md → run_live.sh rejects new variants](./TROUBLESHOOTING.md#run_livesh-rejects-new-variants-with-unknown-variant) |
 
 For the full forensic treatment of every issue we've hit, see
 [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).

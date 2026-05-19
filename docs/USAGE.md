@@ -19,6 +19,9 @@ This document assumes you've already set up the Kria via
 10. [Deep dive: adding a new YOLOv5 variant](#10-deep-dive-adding-a-new-yolov5-variant)
 11. [Deep dive: adding a new model family](#11-deep-dive-adding-a-new-model-family)
 12. [What's where](#12-whats-where)
+13. [VAI 3.5 model zoo benchmark](#13-vai-35-model-zoo-benchmark)
+14. [Eggs detection workflow (YOLOv11)](#14-eggs-detection-workflow-yolov11)
+15. [Hard-negative dataset assembly (YOLOv11)](#15-hard-negative-dataset-assembly-yolov11)
 
 ## 1. Hello-world smoke test
 
@@ -72,6 +75,10 @@ sudo bash scripts/kria/run_live.sh yolov5n visual
 #    click Run All in the notebook
 ```
 
+For YOLOv11 (egg detection) the same shape applies but with a
+preceding training step — see [§14 Eggs detection workflow](#14-eggs-detection-workflow-yolov11)
+below.
+
 No SSH tunnel. No second terminal on the laptop. The Kria's IP is
 auto-discovered and printed in the launch banner.
 
@@ -83,7 +90,7 @@ bash scripts/host/02_compile.sh <family> <variant> <weights.pt> <calib_dir>
 
 Where `<variant>` is one of the entries in
 [`lpr_pipeline/shared/models.py`](../lpr_pipeline/shared/models.py)
-(`yolov5n`, `yolov5s`, `yolox_tiny`, `yolox_nano`).
+(`yolov5n`, `yolov5s`, `yolov11n`, `yolov11s`, `yolox_tiny`, `yolox_nano`).
 
 The script:
 
@@ -96,11 +103,11 @@ The script:
    output (the head's CPU-side decode is what `decode_yolov5u` does at
    runtime)
 4. Exports to ONNX
-5. Quantizes via NNDCT to INT8 with calibration data from
-   `data/calib_images/`
+5. Quantizes via NNDCT to INT8 with calibration data from the supplied
+   calibration directory
 6. Compiles to xmodel via `vai_c_xir --arch /opt/vitis_ai/compiler/arch/DPUCZDX8G/KV260/arch.json`
 
-Output: `xmodels_vai35/<variant>/<variant>_kv260.xmodel`
+Output: `out/<variant>/<variant>_kv260.xmodel`
 
 > The script is **idempotent** — if you re-run it with the same weights,
 > it skips finished stages. Force a fresh compile with `REBUILD=1` env
@@ -111,6 +118,11 @@ Output: `xmodels_vai35/<variant>/<variant>_kv260.xmodel`
 > `SWAP_ACTIVATIONS=false` to skip the auto-swap. The pipeline detects
 > SiLU/LeakyReLU counts automatically and only swaps when SiLU is
 > dominant.
+
+> **YOLOv11 note**: for `yolov11n` and `yolov11s`, you must train via
+> `scripts/host/_train_yolov11.py` first — see [YOLOV11.md](./YOLOV11.md)
+> for the full workflow. Stock Ultralytics YOLOv11 checkpoints are not
+> directly compilable.
 
 ## 4. Syncing to the Kria
 
@@ -124,7 +136,7 @@ Example:
 bash scripts/host/03_sync_to_kria.sh ubuntu@10.42.0.27 yolov5n
 ```
 
-This rsyncs `xmodels_vai35/<variant>/` from your laptop to
+This rsyncs `out/<variant>/` from your laptop to
 `/home/ubuntu/xmodels_vai35/<variant>/` on the Kria. If you've set up
 SSH key auth (recommended — see [KRIA_SETUP.md §4](./KRIA_SETUP.md#recommended-set-up-ssh-key-auth)),
 the sync is silent. Otherwise you'll be prompted for the Kria's password.
@@ -138,7 +150,10 @@ intermediate artifacts stay on your laptop.
 sudo bash scripts/kria/run_live.sh <variant> [text|visual]
 ```
 
-The second argument picks the notebook. Default is `text`.
+The second argument picks the notebook. Default is `text` for the YOLOv5
+family. For YOLOv11 (yolov11n / yolov11s), the script dispatches to
+`notebooks/eggs/05_deploy_visual.ipynb` regardless of the second
+argument.
 
 The script prepares the FPGA + Jupyter environment:
 
@@ -163,7 +178,7 @@ Kria terminal.
 
 ## 6. Text vs visual mode
 
-Two notebooks ship, designed for different use cases:
+Two YOLOv5 notebooks ship, designed for different use cases:
 
 ### `notebooks/02_deploy_text.ipynb` (text mode)
 
@@ -189,6 +204,11 @@ Two notebooks ship, designed for different use cases:
 - **Typical end-to-end FPS**: 40-50 (display path is the bottleneck;
   DPU compute time is unchanged from text mode).
 
+For YOLOv11, only the visual notebook ships
+(`notebooks/eggs/05_deploy_visual.ipynb`) since the larger imgsz (640
+vs 320) and slower DPU latency (~40-60 ms vs ~8 ms) put end-to-end FPS
+below camera rate even without the display overhead.
+
 You can run both during one Kria session — just stop one (Ctrl-C
 JupyterLab) and start the other.
 
@@ -207,15 +227,41 @@ You must restart because:
 
 Restart is fast (~3 seconds).
 
-When launching via `run_live.sh`, the second argument sets `LPR_VARIANT`
-which the notebook's cell 2 reads:
+When launching via `run_live.sh`, the variant name on the command line
+sets `LPR_VARIANT` which the notebook's cell 2 reads:
 
 ```bash
+# YOLOv5 — picks the variant for the text or visual notebook
+sudo bash scripts/kria/run_live.sh yolov5n visual
 sudo bash scripts/kria/run_live.sh yolov5s visual
+
+# YOLOv11 — yolov11n and yolov11s share the eggs notebook
+sudo bash scripts/kria/run_live.sh yolov11n
+sudo bash scripts/kria/run_live.sh yolov11s
 ```
 
 So you don't even need to edit the notebook — just launch with the
 right variant name.
+
+### Comparing yolov11n vs yolov11s on the same Kria session
+
+The two YOLOv11 variants share the eggs notebook
+(`notebooks/eggs/05_deploy_visual.ipynb`). To compare them:
+
+1. Launch one: `sudo bash scripts/kria/run_live.sh yolov11n`
+2. Run the notebook, observe FPS and detection quality
+3. Stop Jupyter (Ctrl-C twice)
+4. Launch the other: `sudo bash scripts/kria/run_live.sh yolov11s`
+5. Run the same notebook, compare results
+
+Expected outcome (synthetic input):
+- yolov11n: ~26 FPS, more aggressive but more false positives at low
+  confidence on cluttered backgrounds
+- yolov11s: ~17 FPS, cleaner detections, ~67% fewer false positives at
+  the same confidence threshold
+
+See [YOLOV11.md "Capacity vs quantization"](./YOLOV11.md#capacity-vs-quantization-the-v010-experiment)
+for the full study.
 
 ## 8. Reading the performance numbers
 
@@ -257,6 +303,7 @@ display path is your bottleneck. That's normal for visual mode.
 | "End-to-end inference latency (DPU + CPU pre/post)" | Cell 6, `total` field |
 | "End-to-end throughput, live camera" | Cell 14 final stats, `inference fps` |
 | "Theoretical max throughput (pipeline)" | Cell 6, `1000 / total mean` |
+| "Quantization-induced false positives" | See `measure_fps_kria.py` output on the industrial test set; report at multiple confidence thresholds |
 
 Don't mix them. The text notebook's measurements are clean; the visual
 notebook's are display-degraded.
@@ -275,6 +322,8 @@ Quick reference. For full forensic detail see [TROUBLESHOOTING.md](./TROUBLESHOO
 | Jupyter URL says `Connection refused` | Kernel restarted Jupyter or you closed the terminal; relaunch via `run_live.sh` |
 | Tuning script reports `Device or resource busy` | Jupyter still holds the camera; Kernel → Restart in Jupyter, then re-run tuning |
 | Kria can't find the xmodel | Did you `bash scripts/host/03_sync_to_kria.sh ...` from the laptop? |
+| `xrt_device_handle_imp` Check failed | Stale DPU process holding the device. `sudo pkill -f python3` then retry |
+| yolov11s/yolov11n high int8 FPs | Try the larger variant (yolov11s) or raise conf threshold; see [YOLOV11.md](./YOLOV11.md#capacity-vs-quantization-the-v010-experiment) |
 
 ## 10. Deep dive: adding a new YOLOv5 variant
 
@@ -310,10 +359,10 @@ The pipeline will:
 1. Detect that the model has SiLU activations (Ultralytics default)
 2. Auto-swap to LeakyReLU(0.1015625)
 3. Strip the Detect head, export to ONNX
-4. Quantize via NNDCT (uses `data/calib_images/`)
+4. Quantize via NNDCT (uses the supplied calibration directory)
 5. Compile to xmodel
 
-Output: `xmodels_vai35/yolov5m/yolov5m_kv260.xmodel`
+Output: `out/yolov5m/yolov5m_kv260.xmodel`
 
 ### 10.4 Sync + run
 
@@ -331,6 +380,10 @@ yolov5m is much larger than yolov5n. Expect DPU latency to roughly
 triple (from ~7.7 ms to ~20-30 ms) and end-to-end FPS to drop from
 camera-bound (60) to DPU-bound (~30-40). For a thesis comparison, that's
 exactly the interesting tradeoff to measure.
+
+For YOLOv11, the equivalent pattern (n → s) is documented in
+[YOLOV11.md](./YOLOV11.md); the surgery requires a re-training step, not
+just a re-compile.
 
 ## 11. Deep dive: adding a new model family
 
@@ -374,45 +427,67 @@ one at a time without breaking the YOLOv5 path.
 
 ```
 scripts/
-  host/                     ← laptop-side workflow
-    02_compile.sh           ← .pt → xmodel
-    03_sync_to_kria.sh      ← rsync xmodel to board
-  kria/                     ← board-side workflow
-    01_install_vai35.sh     ← one-time install (Pass 5)
-    02_apply_tuning.sh      ← runtime tuning (called by systemd unit)
-    03_install_systemd.sh   ← install the systemd unit
-    run_live.sh             ← launch Jupyter for the live demo
-    lib/common.sh           ← shared logging, summary table, helpers
+  host/                          ← laptop-side workflow
+    02_compile.sh                ← .pt → xmodel (NNDCT path; works for all variants)
+    03_sync_to_kria.sh           ← rsync xmodel to board
+    04_stage_benchmark.sh        ← stage VAI model zoo data on laptop SSD
+    05_sync_benchmark_to_kria.sh ← rsync staged benchmark data to Kria
+    _train_yolov11.py            ← YOLOv11 training with DPU-friendly surgery
+    _export_onnx_yolov11.py (.sh)← PyTorch → clean FP32 ONNX (v0.10)
+    _quantize_onnx_yolov11.py (.sh) ← ONNX → int8 xmodel via vai_q_onnx (v0.10, blocked)
+  kria/                          ← board-side workflow
+    01_install_vai35.sh          ← one-time install (Pass 5)
+    02_apply_tuning.sh           ← runtime tuning (called by systemd unit)
+    03_install_systemd.sh        ← install the systemd unit
+    run_live.sh                  ← launch Jupyter for the live demo (variant-aware)
+    lib/common.sh                ← shared logging, summary table, helpers
 
 lpr_pipeline/
-  shared/                   ← used by both host and Kria
-    models.py               ← ModelSpec registry: get_spec(name)
-  compile/                  ← host-only: PyTorch → xmodel
-    yolov5.py               ← Detect head stripping, SiLU swap
-    quantize.py             ← NNDCT quantize wrapper
+  shared/                        ← used by both host and Kria
+    models.py                    ← ModelSpec registry: get_spec(name)
+  c2psa_dpu.py                   ← DPU-friendly C2PSA replacement (YOLOv11)
+  detect_dpu.py                  ← DWConv → Conv monkey-patch (YOLOv11)
+  compile/                       ← host-only: PyTorch → xmodel
+    yolov5.py                    ← Detect head stripping, SiLU swap
+    yolov11.py                   ← thin subclass for YOLOv11 family
+    quantize.py                  ← NNDCT quantize wrapper
     ...
-  deploy/                   ← Kria-only: xmodel → live detections
-    __init__.py             ← public exports
-    preprocess.py           ← letterbox + RGB + /255 → float32
-    decoders.py             ← decode_yolov5u (DFL softmax + NMS)
-    camera.py               ← ThreadedCamera (BUFFERSIZE=4, MJPG, 60fps)
-    runner.py               ← ModelRunner — ties it all together
-    draw.py                 ← bounding boxes + stats overlay
+  deploy/                        ← Kria-only: xmodel → live detections
+    __init__.py                  ← public exports
+    preprocess.py                ← letterbox + RGB + /255 → float32
+    decoders.py                  ← decode_yolov5u + decode_yolov11 (alias)
+    camera.py                    ← ThreadedCamera (BUFFERSIZE=4, MJPG, 60fps)
+    runner.py                    ← ModelRunner — ties it all together
+    draw.py                      ← bounding boxes + stats overlay
 
 notebooks/
-  01_compile.ipynb          ← host: walk through a compile (optional)
-  02_deploy_text.ipynb      ← Kria: max-throughput text-mode live demo
-  03_deploy_visual.ipynb    ← Kria: visual live demo with sliders
+  01_compile.ipynb               ← host: walk through a compile (optional)
+  02_deploy_text.ipynb           ← Kria: max-throughput text-mode live demo (YOLOv5)
+  03_deploy_visual.ipynb         ← Kria: visual live demo with sliders (YOLOv5)
+  04_vai35_benchmark.ipynb       ← Kria: VAI 3.5 model zoo benchmark
+  eggs/
+    05_deploy_visual.ipynb       ← Kria: eggs interactive demo (YOLOv11n + yolov11s)
 
 docs/
-  KRIA_SETUP.md             ← one-time install on a fresh SD card
-  USAGE.md                  ← this file
-  TROUBLESHOOTING.md        ← every issue we've hit, with detail
-  img/                      ← screenshots (TODO: live demo screenshot)
+  README.md (in repo root)       ← entry point with quick start
+  KRIA_SETUP.md                  ← one-time install on a fresh SD card
+  HOST_SETUP.md                  ← one-time host PC install
+  KRIA_QUICKSTART.md             ← condensed Kria reference
+  USAGE.md                       ← this file
+  MODELS.md                      ← supported model families
+  YOLOV11.md                     ← YOLOv11-specific guide + architecture rationale
+  DATASET.md                     ← ImageNet benchmark sample setup
+  TROUBLESHOOTING.md             ← every issue we've hit, with detail
+  CHANGELOG.md                   ← version history
+  v0.7.3-patchnote.md            ← historical VAI 3.5 benchmark notes
+  vai35_benchmark_report.md      ← historical benchmark results
 
-models/                     ← trained weights (.pt, not git-tracked)
-xmodels_vai35/              ← compiled xmodels (host side, not git-tracked)
-data/                       ← calibration + eval images (not git-tracked)
+data/                            ← calibration + eval images (mostly gitignored)
+  weights/                       ← trained .pt files (tracked since v0.10)
+  calib/                         ← legacy calibration directory
+  calib_v2_hardneg/              ← v0.10 mixed eggs+hardneg calib (gitignored)
+  ...
+out/                             ← compiled xmodels (gitignored)
 ```
 
 ## Next: troubleshooting
@@ -557,3 +632,152 @@ bash scripts/host/04_stage_benchmark.sh --skip-models
 
 The `notebooks/Models_VAI35/` and `notebooks/Datasets/` directories on
 the Kria are gitignored — they exist only after the sync.
+
+## 14. Eggs detection workflow (YOLOv11)
+
+The YOLOv11 family deploys the same way as YOLOv5 once the xmodel
+exists, but **training is a separate step** because the DPU-friendly
+architecture (C2PSA_DPU + plain Conv in the detect head) is not
+weight-compatible with stock Ultralytics checkpoints.
+
+### Full workflow (yolov11n or yolov11s)
+
+```bash
+# 1. Train (on laptop with GPU). Substitute yolo11n.pt with yolo11s.pt
+#    to train the larger variant.
+python3 scripts/host/_train_yolov11.py \
+    --weights yolo11n.pt \
+    --data    data/datasets/eggs_hardneg/data.yaml \
+    --output  data/weights/yolo11n_eggs_dpu.pt \
+    --epochs  50 --batch 16 --imgsz 640
+
+# 2. Compile (on laptop)
+NUM_CLASSES=1 bash scripts/host/02_compile.sh yolov11 yolov11n \
+    data/weights/yolo11n_eggs_dpu.pt \
+    data/calib_v2_hardneg/
+
+# 3. Sync to Kria (on laptop)
+bash scripts/host/03_sync_to_kria.sh ubuntu@<kria-ip> yolov11n
+
+# 4. Run live demo (on Kria)
+sudo bash scripts/kria/run_live.sh yolov11n
+```
+
+This launches `notebooks/eggs/05_deploy_visual.ipynb` with `yolov11n`
+selected. The same notebook works for `yolov11s` — just substitute the
+variant name in step 4.
+
+### Training time expectations (RTX A2000 8GB)
+
+| Variant | Dataset | Epochs | Batch | Time |
+|---|---|---|---|---|
+| yolov11n | 933 eggs only | 50 | 16 | ~12 min |
+| yolov11n | 1335 eggs + hardneg | 50 | 16 | ~14 min |
+| yolov11s | 1335 eggs + hardneg | 50 | 16 | ~27 min |
+
+CPU-only training takes 5+ hours per variant; not recommended.
+
+### Deployment expectations on Kria KV260
+
+| Variant | DPU latency | End-to-end FPS | Notes |
+|---|---:|---:|---|
+| yolov11n | ~38 ms | ~26 | Smaller model, more aggressive but more int8 FPs on cluttered backgrounds |
+| yolov11s | ~58 ms | ~17 | 3.7× params, 67% fewer int8 FPs, no detection precision loss |
+
+See [YOLOV11.md](./YOLOV11.md) for the full architecture rationale and
+the capacity-vs-quantization study.
+
+## 15. Hard-negative dataset assembly (YOLOv11)
+
+For industrial-deployment YOLOv11 models where background false
+positives matter, augmenting the training set with "hard-negative"
+images (visually similar to the deployment scene but with no target
+class instances) is the standard intervention.
+
+This is what the v0.10 eggs workflow uses. The procedure:
+
+### Step 1: identify a hard-negative image source
+
+Pick a public dataset that visually matches your deployment scene
+without containing your target class. For the eggs workflow:
+
+- **Source**: Roboflow's "Production Line Package Tracking v8i"
+- **Why it fits**: conveyor belts, packaging machinery, cardboard
+  boxes — visually similar to the egg-deployment scene minus the eggs
+- **Count**: 402 images selected
+
+Other production / industrial datasets on Roboflow work similarly;
+filter for images that share visual structure (conveyor, machinery,
+lighting) with your deployment context.
+
+### Step 2: merge into your existing dataset
+
+Standard Ultralytics layout:
+
+```
+data/datasets/eggs_hardneg/
+├── train/
+│   ├── images/          (933 eggs + 402 hardneg = 1335 jpgs)
+│   └── labels/          (933 eggs labels + 402 EMPTY .txt files)
+├── valid/               (unchanged from eggs-only)
+│   ├── images/          (32 jpgs)
+│   └── labels/          (32 .txt files)
+└── data.yaml            (single class "egg", nc=1)
+```
+
+The hard-negative `.txt` label files must exist but be **empty** (zero
+lines). Ultralytics' dataloader interprets these as "image with no
+objects". The loss penalizes any positive predictions on these images
+during training.
+
+### Step 3: train as normal
+
+```bash
+python3 scripts/host/_train_yolov11.py \
+    --weights yolo11n.pt \
+    --data    data/datasets/eggs_hardneg/data.yaml \
+    --output  data/weights/yolo11n_eggs_dpu.pt \
+    --epochs  50 --batch 16 --imgsz 640
+```
+
+No special flags. The hardneg images are absorbed into the regular
+training loop.
+
+### Step 4: calibrate with in-domain images only
+
+This is the counterintuitive part. **Don't mix hardneg images into
+your calibration set**. The DPU's per-tensor activation scale
+constraint means mixing domains widens scale ranges and increases
+per-layer quantization noise — which produces *more* false positives,
+not fewer.
+
+For the eggs workflow:
+
+```bash
+# Use eggs-only calibration set (data/calib/), not the mixed
+# eggs+hardneg one
+NUM_CLASSES=1 bash scripts/host/02_compile.sh yolov11 yolov11n \
+    data/weights/yolo11n_eggs_dpu.pt \
+    data/calib/
+```
+
+If you ignore this advice and use a mixed calibration set, you'll
+typically see 30-60% more int8 false positives than with in-domain
+calibration. The empirical result for v0.10 yolov11n: 4,220 FPs (eggs-
+only calib) vs 6,609 FPs (mixed calib) at conf=0.85.
+
+### What this gets you (eggs result)
+
+| Model | Training data | Float `.pt` FPs @ 0.85 | int8 xmodel FPs @ 0.85 |
+|---|---|---:|---:|
+| yolov11n | eggs only | ~12 | 4,220 |
+| yolov11n | eggs + hardneg | **0** | 4,220–6,609 |
+| yolov11s | eggs + hardneg | **0** | **2,172** |
+
+The float `.pt` model achieves zero FPs once hardneg training is added
+— the eggs+hardneg dataset successfully teaches the model "what an egg
+isn't." The int8 deployment requires the additional capacity step
+(yolov11s) to translate that improvement to deployment.
+
+See [YOLOV11.md](./YOLOV11.md) for the full investigation, including
+why mixed-calibration hurt int8 quality.

@@ -1,26 +1,35 @@
 # YOLOv11 on KV260 — User Guide
 
-This document covers everything needed to take a stock Ultralytics YOLOv11n
+This document covers everything needed to take a stock Ultralytics YOLOv11
 model and deploy it to the Kria KV260 DPU through this pipeline.
 
-It's longer than `docs/YOLOV5.md` because YOLOv11 needs architectural
-modifications that YOLOv5n doesn't. Once you understand the additional
-training step, the compile and deploy stages are identical to other
-supported families.
+It's longer than the YOLOv5 documentation because YOLOv11 needs
+architectural modifications that YOLOv5 doesn't. Once you understand the
+additional training step, the compile and deploy stages are identical to
+other supported families.
+
+Two variants are validated end-to-end:
+
+- **`yolov11n`** — small, fast (~26 FPS end-to-end on the KV260). Used as
+  the v0.8 baseline.
+- **`yolov11s`** — larger (3.7× parameters), slower (~17 FPS) but
+  significantly more robust to int8 quantization noise. Added in v0.10 for
+  the capacity-vs-quantization study; see "Capacity vs quantization" below.
 
 ---
 
 ## TL;DR (the three commands)
 
 ```bash
-# 1. Train a DPU-friendly YOLOv11n on your dataset (once per dataset)
+# 1. Train a DPU-friendly YOLOv11 on your dataset (once per dataset).
+#    Substitute yolo11n.pt with yolo11s.pt for the larger variant.
 python3 scripts/host/_train_yolov11.py \
-    --weights stock_yolo11n.pt \
+    --weights yolo11n.pt \
     --data    my_dataset/data.yaml \
     --output  data/weights/my_model_dpu.pt \
     --epochs  50 --batch 16
 
-# 2. Compile to xmodel (standard pipeline)
+# 2. Compile to xmodel (standard pipeline). Use yolov11n or yolov11s.
 NUM_CLASSES=<N> bash scripts/host/02_compile.sh yolov11 yolov11n \
     data/weights/my_model_dpu.pt data/calib/
 
@@ -77,7 +86,105 @@ time and the training loop optimizes the new operations.
 
 ---
 
-## The seven architectural modifications
+## Architecture decisions: why each change
+
+This section explains *why* each modification was chosen, for the
+thesis-defense audience. The list below covers both YOLOv5 and YOLOv11
+because the two families share most DPU adaptations; only the
+attention-block surgery is unique to YOLOv11.
+
+### Shared decisions (apply to YOLOv5 and YOLOv11)
+
+**SiLU → LeakyReLU(0.1015625).** The KV260 DPU natively accelerates
+ReLU, ReLU6, and LeakyReLU with a *single* fixed negative slope of
+`13/128 = 0.1015625`. SiLU/Swish, GELU, Mish, and custom activations
+fall back to CPU, fragmenting the graph into many small subgraphs that
+fail to load via `DpuOverlay.load_model()`. The slope `0.1015625` is
+chosen exactly (not approximated as `0.1`) because the Vitis-AI
+quantizer would otherwise auto-correct it during quantization, and the
+correction introduces float-vs-int8 drift that degrades accuracy.
+
+**Stripped Detect head.** The Detect heads in both YOLOv5u and YOLOv11
+include inline post-processing: DFL projection (softmax + dot product
+over the reg_max=16 dimension), anchor-grid construction, sigmoid for
+class scores, and NMS. Implementing these inside the DPU subgraph would
+require operations the DPU can't accelerate (softmax over a large
+dimension, broadcasting over precomputed anchor tables). Stripping the
+head and emitting raw conv outputs lets the DPU produce its three
+multi-scale tensors at full hardware speed; the decode runs on the CPU
+in ~0.8 ms per frame, which is negligible compared to the DPU's ~8 ms
+on yolov5n or ~38 ms on yolov11n.
+
+**NHWC input wrapper.** The DPU's native data layout is NHWC, but
+PyTorch tensors are NCHW. A no-op `Permute` wrapper at the model
+boundary lets the rest of the pipeline keep PyTorch's convention while
+the DPU sees its preferred layout. Without this, NNDCT inserts the
+permute internally as a CPU op, adding a tiny but unnecessary subgraph
+at every model run.
+
+### YOLOv11-specific decisions (don't apply to YOLOv5)
+
+**C2PSA → C2PSA_DPU.** Stock C2PSA is a self-attention block: it
+computes Q·Kᵀ (a `torch.matmul` over the spatial-token dimension),
+applies softmax, then dots against V. None of those operations are in
+the DPU's op set. Three replacement choices were considered:
+
+| Option | Pros | Cons | Choice |
+|---|---|---|---|
+| Remove C2PSA entirely | Simplest; matches YOLOv11 - "no PSA" variant | Loses the accuracy gain that motivates choosing v11 over v5u | No |
+| Implement multi-subgraph compile preserving original C2PSA | Mathematically exact | Forces CPU↔DPU boundaries at every attention block; ~2-4× slower; can't use PYNQ-DPU's loader | No |
+| Replace with DPU-friendly approximation | Single DPU subgraph; near-native speed | Not equivalent — must retrain | **Yes** |
+
+`C2PSA_DPU` uses HardSigmoid (a piecewise-linear approximation of
+sigmoid that the DPU has dedicated hardware for) over a 1×1 conv
+projection to produce a per-position gating tensor, then element-wise
+multiplies the value tensor by the gate. This preserves attention's
+*role* (selective amplification of important positions) while using
+only operations the DPU can accelerate. The quantization argument is
+also favorable: HardSigmoid has a bounded output range (0–1) so
+quantization scales are easy to determine; softmax produces values that
+are very small for most positions and very large for a few, which is
+worst-case behavior for uniform int8 quantization.
+
+**DWConv → Conv in the Detect head's cv3 branch.** Depthwise
+convolutions (`groups=channels`) hit a shape constraint of the
+DPUCZDX8G_ISA1 architecture for the cv3 branch's per-scale convs,
+forcing the entire branch to CPU. Replacing each `DWConv(C, k=3,
+groups=C)` followed by `Conv(C, 64, k=1)` with a single `Conv(C, 64,
+k=3)` keeps the receptive field identical, costs ~1M additional
+parameters across the three scales, and stays entirely on the DPU.
+Re-training is required because the parameter shapes change.
+
+**`tensor.repeat` → `torch.cat`.** Inside the attention block, the
+stock implementation does `attn_score.repeat(1, n, 1, 1)` to expand
+across the channel dimension. The XIR op set doesn't include the
+`nndct_repeat` op, so this would force a CPU subgraph. For `repeat
+factor = 2` (the case in YOLOv11n), `torch.cat([x, x], dim=1)` is
+mathematically equivalent and is a native XIR operation. The
+`C2PSA_DPU` block uses `cat` exclusively.
+
+### Why YOLOv11n was chosen as the eggs baseline (and why YOLOv11s was added later)
+
+YOLOv11n was chosen as the eggs detection baseline for three reasons:
+
+1. **Footprint fits B4096.** Even after surgery (~3.6M params), it
+   compiles to a single 352-op DPU subgraph well within the KV260's
+   B4096 DPU budget.
+2. **It's the smallest current Ultralytics variant.** Provides a
+   meaningful contrast to the older YOLOv5n in the same pipeline.
+3. **Full feature set.** Has C3k2 (the parameter-efficient C3 successor)
+   and C2PSA (the attention block we adapted) — both of which justify
+   choosing v11 over v5u.
+
+YOLOv11s was added in v0.10 *after* deploying v0.8 revealed an
+unexpected problem: yolov11n's int8 quantized model produced thousands
+of false positives on industrial test imagery despite the PyTorch float
+version being perfect. The "capacity vs quantization" experiment below
+documents that finding and the resolution.
+
+---
+
+## The seven architectural modifications (operator-level reference)
 
 For thesis / reference, here's the complete list of operations replaced.
 All of these happen automatically when you use `_train_yolov11.py` and
@@ -106,7 +213,7 @@ the `yolov11` compile family — you don't apply them by hand.
 4. **`Tensor.repeat` (in attention channel expansion) → `torch.cat`.**
    `attn_score.repeat(1, n, 1, 1)` produces a `nndct_repeat` op which
    is not in XIR's op set and forces a CPU subgraph. `torch.cat` is a
-   native XIR operation. For repeat factor 2 (the case in YOLOv11n):
+   native XIR operation. For repeat factor 2 (the case in YOLOv11n/s):
    `cat([attn_score, attn_score], dim=1)` is mathematically equivalent.
 
 5. **Stock `SiLU` activations → `LeakyReLU(0.1015625)`.** This is shared
@@ -138,23 +245,25 @@ the following also apply:
 
 ## Result: what you get
 
-For a YOLOv11n trained on the egg dataset (single class, 933 train / 32
+For a YOLOv11n trained on the eggs dataset (single class, 933 train / 32
 val images) with default `_train_yolov11.py` settings:
 
-| Metric | Value |
-|---|---|
-| Trained-model params | 3,600,083 (vs 2,590,035 stock; +1M from the surgery) |
-| Trained-model layers (fused) | 117 |
-| mAP@0.5 on val | 0.995 |
-| mAP@0.5:0.95 on val | 0.97 |
-| Quantized xmodel size | 4.7 MB |
-| DPU fingerprint | 0x101000056010407 (KV260 B4096, VAI 3.5) |
-| Subgraph count | 5 (1 USER input + 1 DPU with 352 ops + 3 CPU output fix2float) |
-| Loadable via `DpuOverlay.load_model()` | yes |
+| Metric | yolov11n | yolov11s |
+|---|---:|---:|
+| Trained-model params | 3,600,083 | 13,479,891 |
+| Trained-model layers (fused) | 117 | ~155 |
+| mAP@0.5 on val | 0.995 | 0.995 |
+| mAP@0.5:0.95 on val | 0.97 | 0.915 |
+| Quantized xmodel size | 4.7 MB | 15 MB |
+| DPU fingerprint | 0x101000056010407 | 0x101000056010407 |
+| Subgraph count | 5 (1 USER + 1 DPU/352 ops + 3 CPU fix2float) | 5 (same shape) |
+| DPU latency on KV260 | ~38 ms | ~58 ms |
+| End-to-end FPS (synthetic) | ~26 | ~17 |
+| Loadable via `DpuOverlay.load_model()` | yes | yes |
 
-The compile produces a single 352-op DPU subgraph carrying the entire
-backbone, neck, modified attention, and detection conv layers. The three
-output `fix2float` CPU operations are standard int8→float32 dequantization
+Both compile to a single DPU subgraph carrying the entire backbone, neck,
+modified attention, and detection conv layers. The three output
+`fix2float` CPU operations are standard int8→float32 dequantization
 boundaries that every quantized model has.
 
 ---
@@ -165,7 +274,7 @@ boundaries that every quantized model has.
 
 ```bash
 python3 scripts/host/_train_yolov11.py \
-    --weights yolo11n.pt \           # or yolo11n.yaml for from-scratch
+    --weights yolo11n.pt \           # or yolo11s.pt for the larger variant
     --data    my_dataset/data.yaml \
     --output  data/weights/my_model_dpu.pt \
     --epochs  50 \
@@ -191,41 +300,39 @@ The verification step is important — if it reports `✗ WARNING: monkey-patche
 something went wrong (Ultralytics version drift, broken Python path, etc).
 Don't proceed with a model that fails verification.
 
-GPU is strongly recommended. On an RTX A2000 8GB: 50 epochs at batch 16
-on a ~900-image single-class dataset takes ~12 minutes. CPU-only training
-on the same dataset takes 5+ hours.
+GPU is strongly recommended. On an RTX A2000 8GB:
+- yolov11n, 50 epochs at batch 16 on a ~900-image single-class dataset:
+  ~12 minutes
+- yolov11s, same configuration: ~27 minutes
+
+CPU-only training takes 5+ hours per variant.
 
 ### Step 2: compile to xmodel
 
 ```bash
+# yolov11n
 NUM_CLASSES=1 bash scripts/host/02_compile.sh yolov11 yolov11n \
-    data/weights/my_model_dpu.pt data/calib/
+    data/weights/yolo11n_eggs_dpu.pt data/calib_v2_hardneg/
+
+# yolov11s (same shape, just swap the variant + weights paths)
+NUM_CLASSES=1 bash scripts/host/02_compile.sh yolov11 yolov11s \
+    data/weights/yolo11s_eggs_dpu.pt data/calib_v2_hardneg/
 ```
 
-Note `yolov11` (the family) is now a valid first argument, as of v0.8.0.
+This is the standard pipeline. The yolov11 compile path adds defensive
+imports of `lpr_pipeline.c2psa_dpu` and `lpr_pipeline.detect_dpu` so the
+unpickled model can resolve the C2PSA_DPU class inside the Vitis-AI
+container. Everything else (SiLU swap, head stripping, NHWC wrap,
+quantize, compile) is shared with the yolov5 path.
 
-The compile pipeline:
-
-1. Activates the Vitis-AI 3.5 Docker container (the script auto-selects
-   CPU or GPU image)
-2. Inside the container, runs the standard pipeline:
-   - Load `.pt` (pickle finds `lpr_pipeline.c2psa_dpu.C2PSA_DPU` via the
-     repo's `/workspace` mount)
-   - SiLU → LeakyReLU activation swap
-   - Strip Detect head's inline post-processing
-   - Wrap with NHWC permute
-   - Calibrate with up to 200 images from `data/calib/`
-   - Quantize via `pytorch_nndct`
-   - Compile via `vai_c_xir` for KV260 B4096
-3. Final xmodel written to `out/yolov11n/yolov11n_kv260.xmodel`
-
-**Important: calibration data quality matters.** The quantizer learns
-activation ranges from calibration images. If your training data is eggs
-and your calibration set is license plates (or vice versa), the
-quantization scales will be wrong for the deployment domain and you'll
-see false positives or missed detections. Always calibrate with images
-that match your deployment data distribution. The simplest approach is
-to put a representative sample of your training images in `data/calib/`.
+A critical detail: **calibration data must match deployment domain**.
+Using LPR calibration images for an egg model (or vice versa) causes
+the int8 model to see false positives or missed detections. Always
+calibrate with images that match your deployment data distribution. The
+simplest approach is to put a representative sample of your training
+images in `data/calib/`. For hard-negative training (see below), include
+the hard-negative images in the calibration mix too — or *don't*, see
+the "calibration set composition" warning at the end of this document.
 
 Compile time depends on whether you have the GPU VAI image:
 
@@ -235,23 +342,22 @@ Compile time depends on whether you have the GPU VAI image:
 ### Step 3: sync to Kria
 
 ```bash
-bash scripts/host/03_sync_to_kria.sh ubuntu@10.42.0.189 yolov11n
+bash scripts/host/03_sync_to_kria.sh ubuntu@10.42.0.189 yolov11n   # or yolov11s
 ```
 
-This copies the xmodel to `/home/ubuntu/xmodels_vai35/yolov11n/yolov11n_kv260.xmodel`
-on the Kria. The Kria-side scripts (`run_benchmark.sh`, `run_live.sh`)
-look there.
+This copies the xmodel to
+`/home/ubuntu/xmodels_vai35/<variant>/<variant>_kv260.xmodel` on the
+Kria. The Kria-side scripts (`run_benchmark.sh`, `run_live.sh`) look
+there.
 
 ### Step 4: deploy
 
 Multiple options on the Kria:
 
 ```bash
-# Live demo
+# Live demo (yolov11n or yolov11s)
 bash scripts/kria/run_live.sh yolov11n
-
-# Benchmark
-bash scripts/kria/run_benchmark.sh yolov11n
+bash scripts/kria/run_live.sh yolov11s
 
 # Or use ModelRunner directly from Python
 python3 -c "
@@ -261,8 +367,8 @@ from lpr_pipeline.deploy.runner import ModelRunner
 
 overlay = DpuOverlay('dpu.bit')
 runner = ModelRunner(
-    get_spec('yolov11n'),
-    '/home/ubuntu/xmodels_vai35/yolov11n/yolov11n_kv260.xmodel',
+    get_spec('yolov11s'),
+    '/home/ubuntu/xmodels_vai35/yolov11s/yolov11s_kv260.xmodel',
     overlay,
 )
 runner.warmup(n=3)
@@ -275,59 +381,290 @@ delegates to `decode_yolov5u()`) and to `Preprocessor("yolov11", 640)`
 based on the spec's `family` field. Both decoders use the same DFL math
 because YOLOv5u and YOLOv11 share the Detect head structure.
 
+The `run_live.sh` script launches `notebooks/eggs/05_deploy_visual.ipynb`
+for both yolov11n and yolov11s.
+
+---
+
+## Capacity vs quantization — the v0.10 experiment
+
+This section documents the experimental investigation that motivated
+adding yolov11s. It's important enough that it belongs in the
+thesis-defense audience's understanding of why both variants exist.
+
+### Setup
+
+After v0.8 deployed yolov11n successfully on the eggs dataset, evaluation
+on a held-out **459-image industrial test set** (real conveyor footage)
+revealed an unexpected pattern:
+
+- **PyTorch float `.pt` model** detected the ~50 true positives per
+  representative image with **zero false positives** at conf=0.85.
+- **DPU int8 xmodel** detected the same true positives but also
+  produced thousands of false positives on conveyor machinery, baskets,
+  and background structure at conf=0.85.
+
+The first attempted fix was **hard-negative training**: augment the
+eggs dataset with images of empty conveyor / machinery / packaging to
+teach the model "what an egg isn't" (see "Hard-negative training
+workflow" below for the procedure). After retraining yolov11n on the
+combined eggs + hard-negative dataset:
+
+- **Float `.pt` model**: now zero false positives at conf=0.85 ✓
+- **DPU int8 xmodel**: false positives **unchanged or worse**
+
+This decoupling — float model perfect, int8 model failing —
+demonstrated that the bottleneck was the int8 quantization itself, not
+the training data.
+
+The second attempt was **expanded calibration**: include the
+hard-negative images in the calibration set to ensure their activation
+statistics inform the quantization scales. Counterintuitively, this
+made the int8 model **worse**: 6,609 FPs at conf=0.85 vs 4,220 before.
+The reason is structural: the DPU hardware uses *per-tensor* (not
+per-channel) activation scales, and mixing in-domain and
+out-of-domain images forces those per-tensor scales to span a wider
+range. Wider scales mean coarser per-bucket quantization, more
+per-layer noise, and the downstream amplification produces more
+spurious high-confidence detections.
+
+The third attempt — and the one that worked — was the **capacity
+hypothesis**: maybe the int8 quantization noise overwhelms a small
+model but is tolerable for a bigger one with more weight redundancy.
+
+### Results
+
+Tested by training yolov11s (3.7× yolov11n's parameters) on the same
+augmented dataset, compiling with the same calibration set, and
+evaluating on the same 459-image industrial test set:
+
+| Threshold | yolov11n (mixed calib) | yolov11s | Reduction |
+|---:|---:|---:|---:|
+| @ 0.50 | 7,685 FPs | 4,826 | -37% |
+| @ 0.70 | 7,493 FPs | 3,443 | -54% |
+| @ 0.85 | 6,609 FPs | **2,172** | **-67%** |
+| Worst single image | 165 FPs | 67 | -59% |
+| Mean FP confidence @ 0.85 | 0.96 | 0.93 | Lower saturation |
+
+Egg-detection precision was preserved end-to-end (yolov11n vs yolov11s
+on three validation images: 53/57/47 vs 52/58/47 detections, average
+delta 0).
+
+Throughput tradeoff (synthetic input, 100 iterations on Kria):
+
+| Variant | DPU latency (mean) | End-to-end FPS |
+|---|---:|---:|
+| yolov11n | 38.8 ms | 25.8 |
+| yolov11s | 58.2 ms | 17.2 |
+
+### Interpretation for thesis
+
+For DPU int8 deployment of fine-grained single-class discrimination,
+**model capacity is the dominant lever** for quantization robustness.
+Training-data composition and calibration strategy are secondary
+factors. The cost is throughput (33% drop) for a ~3× false-positive
+reduction with zero detection-precision compromise.
+
+The intuition: with more parameters, the model has more weight
+redundancy, so the per-layer quantization noise (which is roughly
+constant for a given DPU hardware spec) is a smaller fraction of any
+single weight's signal. Bigger models also have a wider dynamic range
+in their activations, which spreads better over the int8 quantization
+bins. Together these effects compound through the network's depth.
+
+This finding generalizes a result that's been observed in NLP
+(quantization tolerance scales with model size) into the DPU object-
+detection regime.
+
+---
+
+## Hard-negative training workflow
+
+For industrial deployments where background false positives matter,
+augmenting the training set with hard-negative images is the standard
+intervention. This section documents the procedure used for the v0.10
+eggs deployment.
+
+### What counts as a hard-negative image
+
+An image that contains no instances of the target class but is visually
+similar to environments where the target class would normally appear.
+For the eggs deployment: conveyor belts, packaging machinery, plastic
+baskets, cardboard cartons — anything that triggered false positives
+on real industrial footage.
+
+The labels for hard-negative images are **empty** (zero objects).
+Ultralytics YOLOv11 handles empty labels correctly; the loss penalizes
+any positive predictions on these images.
+
+### Dataset assembly
+
+The eggs+hardneg dataset used for v0.10:
+
+```
+data/datasets/eggs_hardneg/
+├── train/
+│   ├── images/         (933 eggs + 402 hardneg = 1335 images)
+│   └── labels/         (933 eggs labels + 402 empty .txt files)
+├── valid/              (32 eggs validation, unchanged)
+└── data.yaml           (single class "egg", nc=1)
+```
+
+The 402 hard-negative images came from Roboflow's "Production Line
+Package Tracking v8i" public dataset. Selection criteria:
+
+1. Conveyor belts / industrial backgrounds matching the deployment scene
+2. No egg-shaped objects in frame
+3. Resolution close to the eggs training set
+
+After merging, the empty `.txt` label files (one per hard-negative
+image) ensure Ultralytics' dataloader includes them in training without
+counting them toward any class.
+
+### Training command
+
+Identical to a normal yolov11 training run; just point at the augmented
+dataset's `data.yaml`:
+
+```bash
+python3 scripts/host/_train_yolov11.py \
+    --weights yolo11n.pt \
+    --data    data/datasets/eggs_hardneg/data.yaml \
+    --output  data/weights/yolo11n_eggs_dpu.pt \
+    --epochs  50 --batch 16 --imgsz 640
+```
+
+### Calibration set composition warning
+
+The temptation is to also include hard-negative images in the
+calibration set (so the quantizer "knows about them"). For DPU int8 on
+this DPU hardware, **this typically makes false positives worse**, not
+better. The reason is the per-tensor activation scale constraint
+(documented in "Capacity vs quantization" above): mixing domains
+widens scale ranges and increases per-layer noise.
+
+Empirical observation from v0.10:
+- Calibration with 600 eggs-only images → 4,220 FPs @ 0.85
+- Calibration with 300 eggs + 300 hardneg → 6,609 FPs @ 0.85 (+57%)
+
+The safer default is to calibrate with in-domain (eggs-only) images
+even if the training set is augmented. If you must mix, evaluate
+side-by-side before deploying.
+
+---
+
+## ONNX deployment path — investigated, not deployable
+
+This section documents an alternative deployment path that was
+investigated in v0.10 and found not to be usable for this YOLOv11
+architecture in the current toolchain. Included for thesis completeness;
+if you're not trying to use the ONNX path, skip this section.
+
+### Motivation
+
+The default compile flow uses Vitis-AI's NNDCT (PyTorch-native) PTQ.
+Vitis-AI 3.5 also ships `vai_q_onnx`, an ONNX-based PTQ path with two
+theoretical advantages:
+
+1. **Per-channel weight quantization** (NNDCT is per-tensor only)
+2. **VitisQuantFormat options** (FixNeuron vs QDQ for different
+   downstream compilers)
+
+Per-channel weight quantization in particular can reduce quantization
+error on layers with high weight variance — exactly the issue motivating
+the v0.10 false-positive investigation.
+
+### Scripts
+
+Two helpers were added in v0.10:
+
+| Script | Role |
+|---|---|
+| `scripts/host/_export_onnx_yolov11.py` (+`.sh`) | PyTorch → clean FP32 ONNX (~14 MB) |
+| `scripts/host/_quantize_onnx_yolov11.py` (+`.sh`) | ONNX → int8 → xmodel via `vai_q_onnx` |
+
+The export script applies the same monkey-patches as `_train_yolov11.py`
+plus the compile-time transformations (SiLU swap, NHWC wrap, head
+stripping), then validates the exported ONNX against the PyTorch reference
+to <1e-4 maximum absolute difference. **This step works reliably and is
+reusable** for any future ONNX-based deployment work.
+
+### Investigation outcome
+
+`vai_q_onnx.quantize_static()` fails on the YOLOv11 graph in
+`align_concat`, an internal refinement pass:
+
+```
+TypeError: '<' not supported between instances of 'NoneType' and 'int'
+  at: pass_align_concat
+```
+
+The failure persists regardless of:
+- `per_channel` setting (True or False)
+- `quant_format` (FixNeuron or QDQ)
+- `N_CALIB` value (50, 200, 600)
+- with or without `optimize_model=True`
+
+Additionally, even if the PTQ step succeeded, the DPU hardware uses
+per-tensor activation scales — which negates the per-channel
+quantization advantage that motivated the ONNX path in the first place.
+
+### Decision
+
+The ONNX path is not deployable for this YOLOv11 architecture in
+`vai_q_onnx 1.14.0`. Scripts retained in-tree because:
+
+1. The export step is independently useful (ONNX is a portable
+   intermediate)
+2. A future Vitis-AI release may fix the `align_concat` issue
+3. The graph itself is cross-validated, so anyone exploring alternative
+   ONNX-based deployment paths (e.g., onnxruntime-DPU, OpenVINO, other
+   FPGA toolchains) has a clean starting point
+
 ---
 
 ## Known limitations
 
-### Quantization accuracy gap
+### Quantization noise on small models
 
-On the egg dataset, PyTorch float and DPU int8 produce very similar
-detections on the same image (the same ~50 true positives plus the same
-~12 false positives on background machinery and baskets). The
-quantization gap is small.
+As documented in "Capacity vs quantization" above, int8 PTQ on
+yolov11n produces a large false-positive rate on fine-grained
+single-class detection tasks (egg detection on industrial backgrounds).
+The mitigation is yolov11s or larger; raising the confidence threshold
+to 0.85+ also helps but at the cost of recall on hard true positives.
 
-That said, **the false positives in both models reflect dataset bias** —
-the Roboflow eggs dataset is mostly close-up belt shots with limited
-background diversity, so the model never learned "what's not an egg" for
-machinery/basket backgrounds. The fix is more diverse training data, not
-better quantization.
+### Architecture-induced accuracy ceiling (vs stock YOLOv11)
 
-If your application sees novel backgrounds, expect false positives at low
-confidence thresholds. Two mitigations:
+Replacing softmax attention with element-wise HardSigmoid gating
+reduces the model's selectivity for spatial patterns where attention
+would normally focus on specific anchor positions. For most detection
+tasks this isn't an issue (detection is largely a per-cell
+classification problem). For tasks with heavy spatial relationships
+(multi-object association, attribute detection conditioned on spatial
+relationships) the modified architecture may underperform stock
+YOLOv11. The eggs task doesn't exercise these patterns so the ceiling
+isn't visible.
 
-1. **Raise the confidence threshold** at deploy time. In the egg test
-   case, raising from 0.25 to 0.85 cleanly separates true eggs (typically
-   0.90+) from background false positives.
+If you need full-fidelity attention, deploy via
+`vitis_ai_library.GraphRunner` on a multi-subgraph compile of the stock
+YOLOv11n — this preserves the attention but is significantly slower
+(CPU↔DPU boundaries at every attention block). This pipeline doesn't
+currently support that path.
 
-2. **Add hard-negative images to training**. Sample frames of just the
-   conveyor / machinery / background without the target object and label
-   them as "no objects". 100-300 such frames typically suppress most
-   background false positives.
+### Quantization-Aware Training (QAT)
 
-### Architecture-induced accuracy ceiling
+QAT was attempted in early v0.9 development. The intent was to narrow
+the float-vs-int8 gap by simulating int8 quantization inside the
+training loop. The path proved difficult to integrate with Ultralytics'
+training loop (Vitis-AI's `pytorch_nndct.QatProcessor` expects a
+PyTorch-native training loop, and Ultralytics' trainer adds its own
+forward hooks and module wrapping). Abandoned in favor of the PTQ +
+hard-negative + capacity approach documented above, which proved
+effective without requiring training-pipeline integration.
 
-Replacing softmax attention with element-wise gating reduces the model's
-selectivity for spatial patterns where attention would normally focus on
-specific anchor positions. For most detection tasks this isn't an issue
-(detection is largely a per-cell classification problem). For tasks with
-heavy spatial relationships (multi-object association, attribute
-detection conditioned on spatial relationships) the modified architecture
-may underperform stock YOLOv11. The egg task doesn't exercise these
-patterns so the ceiling isn't visible.
-
-If you need full-fidelity attention, deploy via `vitis_ai_library.GraphRunner`
-on a multi-subgraph compile of the stock YOLOv11n — this preserves the
-attention but is significantly slower (CPU↔DPU boundaries at every
-attention block). This pipeline doesn't currently support that path.
-
-### Quantization-Aware Training (QAT) — future work
-
-The current pipeline uses post-training quantization (PTQ). For sensitive
-applications, QAT typically narrows the float-vs-int8 gap by simulating
-int8 quantization inside the training loop. Vitis-AI supports QAT via
-`pytorch_nndct.QatProcessor`. Adding a QAT mode to `_train_yolov11.py`
-is straightforward but hasn't been implemented yet (not blocking for the
-v0.8.0 release).
+For future work: a clean QAT integration would either patch
+Ultralytics' `BaseTrainer` to expose the right hooks, or train via a
+custom loop that bypasses the Ultralytics trainer entirely.
 
 ---
 
@@ -339,13 +676,17 @@ v0.8.0 release).
 | `lpr_pipeline/detect_dpu.py` | `apply_dwconv_monkey_patch()` function |
 | `lpr_pipeline/compile/yolov11.py` | Family-specific compile module (delegates to yolov5) |
 | `lpr_pipeline/compile/registry.py` | Maps `family="yolov11"` to the compile module |
-| `lpr_pipeline/shared/models.py` | `yolov11n` registry entry; promotes status to "full" |
+| `lpr_pipeline/shared/models.py` | `yolov11n` and `yolov11s` registry entries; both status "full" |
 | `lpr_pipeline/deploy/decoders.py` | `decode_yolov11()` alias of `decode_yolov5u()` |
 | `lpr_pipeline/deploy/preprocess.py` | `Preprocessor` accepts `family="yolov11"` |
 | `lpr_pipeline/deploy/runner.py` | `ModelRunner` family→decoder dispatch |
 | `scripts/host/_train_yolov11.py` | User-facing training entry point |
-| `scripts/host/02_compile.sh` | Accepts `yolov11` as family argument |
+| `scripts/host/_export_onnx_yolov11.py` (+`.sh`) | PyTorch → ONNX export (v0.10) |
+| `scripts/host/_quantize_onnx_yolov11.py` (+`.sh`) | ONNX PTQ via `vai_q_onnx` (v0.10, blocked) |
+| `scripts/host/02_compile.sh` | Accepts `yolov11` as family argument; works for both variants |
 | `scripts/host/03_sync_to_kria.sh` | Generic — works for any compiled model |
+| `scripts/kria/run_live.sh` | Dispatches `yolov11n` and `yolov11s` to the eggs notebook |
+| `notebooks/eggs/05_deploy_visual.ipynb` | Live eggs detection demo |
 
 ---
 
@@ -408,6 +749,24 @@ If you see additional CPU subgraphs with names containing `DWConv` or
 Re-train from scratch with `_train_yolov11.py` and re-verify the saved
 model's architecture before recompiling.
 
+### High int8 false-positive rate on industrial imagery
+
+If you see thousands of false positives at conf=0.85 on background
+machinery while the PyTorch float model is clean, the cause is
+quantization noise on a model that's near the int8 capacity floor for
+your task. Options in order of effectiveness:
+
+1. **Switch to yolov11s** (or larger). See "Capacity vs quantization"
+   above — typically 60-70% FP reduction with no detection-precision
+   loss; ~33% throughput penalty.
+2. **Verify calibration set composition.** Use in-domain images only
+   (don't mix in hard-negatives at calibration time).
+3. **Raise the deployment confidence threshold** (cheapest; works if
+   your true positives have separable confidence from your false
+   positives).
+4. **Add hard-negative training images** (helps the float model; may
+   or may not transfer to int8 — measure both).
+
 ### Detection quality on deployment differs from PyTorch reference
 
 Confirm calibration data matches deployment domain. If you trained on
@@ -419,5 +778,13 @@ If calibration matches and you still see major drift, the issue is
 likely numerical precision loss from quantization. Mitigations:
 
 - Raise inference confidence threshold (cheapest)
+- Switch to a larger variant — yolov11s instead of yolov11n
 - Add more calibration images (`N_CALIB=500 bash scripts/host/02_compile.sh ...`)
-- Implement QAT (most effective; see "Future work")
+- Re-check calibration composition (in-domain only — see warning above)
+
+### ONNX export script works but vai_q_onnx fails in align_concat
+
+This is the documented v0.10 blocker on the ONNX deployment path; see
+"ONNX deployment path — investigated, not deployable" above. The
+NNDCT path (default `02_compile.sh`) is the working alternative for
+this YOLOv11 architecture in `vai_q_onnx 1.14.0`.

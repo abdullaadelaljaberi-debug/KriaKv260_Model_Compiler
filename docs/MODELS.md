@@ -7,7 +7,7 @@ of differences in quantization conventions, head structure, and decoder logic.
 | Family | Variants | Status | Decoder | Notes |
 |---|---|---|---|---|
 | **YOLOv5** (Ultralytics u-variant) | `yolov5n`, `yolov5s` | ✅ full | DFL anchor-free | Single DPU subgraph; uses `pynq_dpu.DpuOverlay.runner` |
-| **YOLOv11** (Ultralytics) | `yolov11n` | ✅ full | DFL anchor-free | Requires architectural surgery at training time; see `docs/YOLOV11.md`. Single DPU subgraph after surgery. |
+| **YOLOv11** (Ultralytics) | `yolov11n`, `yolov11s` | ✅ full | DFL anchor-free | Requires architectural surgery at training time; see `docs/YOLOV11.md`. Single DPU subgraph after surgery. |
 | **YOLOX** (Megvii) | `yolox_tiny`, `yolox_nano` | ✅ full | sigmoid + grid | Multi-DPU-subgraph; uses `vitis_ai_library.GraphRunner` |
 | **YOLOv7** (WongKinYiu) | `yolov7-tiny` | 🚧 stub | anchor-based | Compile path scaffolded; family-specific code TBD |
 | **YOLOv4-CSP** | `yolov4_csp` | 🚧 stub | anchor-based | Compile path scaffolded; family-specific code TBD |
@@ -35,6 +35,12 @@ of differences in quantization conventions, head structure, and decoder logic.
 - **Calibration set**: any folder of representative images (UC3M-LP for the
   LPR demo)
 - **Demo**: `yolov5n` for license plate detection, ~60 fps live (camera-bound)
+- **Architectural modifications applied at compile time** (no retraining
+  required): `SiLU → LeakyReLU(0.1015625)` via
+  `lpr_pipeline.compile.yolov5._swap_silu_to_leakyrelu`. The Detect head's
+  inline decode/NMS is stripped; decoding is done CPU-side after the DPU
+  returns raw conv outputs. An NHWC permute wrapper matches the DPU's
+  native input layout.
 
 ### YOLOv11 (✅ full)
 
@@ -43,7 +49,12 @@ of differences in quantization conventions, head structure, and decoder logic.
   ships its own compile path
 - **Variants in this pipeline**:
   - `yolov11n` — input 640×640, ~3.6M params after DPU-friendly surgery, single
-    352-op DPU subgraph on KV260 B4096
+    352-op DPU subgraph on KV260 B4096, ~38 ms DPU latency
+  - `yolov11s` — input 640×640, ~13.5M params after DPU-friendly surgery (3.7×
+    yolov11n), single DPU subgraph, ~58 ms DPU latency. Added in v0.10 for
+    the capacity-vs-quantization study; produces 67% fewer int8 false
+    positives than yolov11n on industrial test imagery (see
+    `docs/YOLOV11.md`)
 - **Head**: anchor-free with Distribution Focal Loss (DFL), structurally
   identical to YOLOv5u; same `reg_max=16` and channel layout, same
   `_strip_detect_head_for_quant()` and same `decode_yolov5u()` decoder
@@ -66,6 +77,14 @@ of differences in quantization conventions, head structure, and decoder logic.
 - **Calibration data**: must match deployment domain. For the egg detection
   demo, calibration uses egg training images; using mismatched calibration
   (e.g., LPR images for an egg model) causes significant quantization drift.
+  Calibrating with a *mixture* of in-domain and out-of-domain images can
+  also hurt — see "calibration set composition" in `docs/YOLOV11.md`.
+- **Hard-negative training**: for industrial deployments where background
+  false positives matter, augment the training set with labeled empty
+  frames (e.g., conveyor / machinery images with no target object). The
+  v0.10 eggs demo uses 402 hard-negative images (Roboflow Production Line
+  Package Tracking v8i) merged with 933 eggs images. See
+  `docs/YOLOV11.md` for the workflow.
 - **Validated on**: egg detection (Roboflow `egg.v4` dataset, 933 train /
   32 val images, single class) — mAP@0.5 = 0.995 in PyTorch, comparable
   detection quality after int8 quantization
@@ -127,6 +146,12 @@ For YOLOv5 / YOLOX, adding e.g. `yolov5m` or `yolox_s` requires:
 3. Run `bash scripts/host/02_compile.sh <family> <name>` — the existing
    compile pipeline handles all variants of a supported family
 
+For YOLOv11, adding e.g. `yolov11m` requires the same three steps PLUS
+re-training with `scripts/host/_train_yolov11.py` because the
+DPU-friendly surgery (C2PSA_DPU, DWConv→Conv) is not weight-compatible
+with stock Ultralytics checkpoints. The yolov11s entry added in v0.10
+demonstrates the pattern.
+
 ## Adding a new family from scratch
 
 1. Read the matching VAI 3.5 model zoo entry to understand head structure
@@ -145,6 +170,7 @@ Every xmodel is compiled for the KV260's B4096 DPU at fingerprint
 will load but fail at execution time with a fingerprint-mismatch error.
 The compile pipeline always targets B4096 / VAI 3.5; reconfiguring is
 out of scope.
+
 ## Activation function policy
 
 The KV260's DPUCZDX8G has limited hardware support for activation functions:

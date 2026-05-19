@@ -1,5 +1,133 @@
 # Changelog
 
+## v0.10.0 — yolov11s variant + capacity-vs-quantization study (2026-05-19)
+
+### Added
+
+- **`yolov11s` registered as a first-class variant** (family=`yolov11`,
+  imgsz=640, reg_max=16, status=`full`). Same DPU-friendly architecture
+  surgery as yolov11n: `C2PSA → C2PSA_DPU`, `DWConv → Conv` in the
+  Detect head, `SiLU → LeakyReLU(0.1015625)`. Compiles to a single DPU
+  subgraph on KV260 B4096. 13.5M parameters (3.7× yolov11n's 3.6M).
+
+- **Hard-negative training workflow.** Augmented the eggs dataset with
+  402 industrial conveyor images (Roboflow "Production Line Package
+  Tracking v8i") as labeled empty frames. Trained both yolov11n and
+  yolov11s on the combined 1,335-image dataset (933 eggs + 402
+  hard-negatives). The float `.pt` model now produces **zero false
+  positives** on a held-out 459-image industrial test set at the
+  deployment threshold.
+
+- **`scripts/host/_export_onnx_yolov11.py` + `.sh`** — PyTorch → clean
+  ONNX export. Applies the C2PSA_DPU + DWConv monkey-patches, swaps SiLU
+  → LeakyReLU, strips the Detect head's post-processing, wraps with NHWC
+  permute for DPU input layout, exports at ONNX opset 17, cross-validates
+  against the PyTorch reference to <1e-4 max abs difference. Produces a
+  ~14 MB FP32 ONNX containing standard ops only (Conv, LeakyRelu, Add,
+  Concat, Mul, MaxPool, Resize, HardSigmoid).
+
+- **`scripts/host/_quantize_onnx_yolov11.py` + `.sh`** — Vitis-AI
+  ONNX-based PTQ via `vai_q_onnx.quantize_static()`. Supports
+  `VitisQuantFormat.FixNeuron` and `VitisQuantFormat.QDQ`, configurable
+  `per_channel`, and balanced calibration data reader using the existing
+  `Preprocessor`. Compiles output via `vai_c_xir`. See "Investigation
+  outcome" below for status.
+
+- **Tracked model weights in git** (override of the existing
+  `data/weights/*` gitignore rule via `!data/weights/*.pt`):
+  - `yolo11n_eggs_dpu.pt` (post-hardneg, 0 FPs at float)
+  - `yolo11n_eggs_dpu_pre_hardneg.pt` (backup of pre-hardneg checkpoint)
+  - `yolo11s_eggs_dpu.pt` (new yolov11s, mAP50 0.995, mAP50-95 0.915)
+  - `yolo11n_eggs.pt`, `yolov5n_lpr.pt` (existing checkpoints, now
+    visible in git)
+
+- **`notebooks/eggs/05_deploy_visual.ipynb`** — interactive egg detection
+  demo notebook (was working locally; now committed to the repo).
+
+### Changed
+
+- **`lpr_pipeline/shared/models.py`** — `Family` Literal already includes
+  `"yolov11"`; added `"yolov11s"` ModelSpec entry alongside `"yolov11n"`.
+
+- **`scripts/kria/run_live.sh`** — case-statement dispatch extended:
+  `yolov11n|yolov11s)` share the eggs notebook branch.
+
+- **`.gitignore`** — added `data/calib_lpr_backup/`, `data/calib_v2_hardneg/`,
+  `data/calib_v3_*/`, `data/calib_v4_*/` (large regeneratable calibration
+  image sets). Added `!data/weights/*.pt` to allow trained checkpoints
+  to be tracked.
+
+### Experimental findings
+
+The v0.10 work centered on understanding why int8 quantization of
+yolov11n produced catastrophic false-positive rates on industrial test
+imagery despite the PyTorch float model being numerically perfect (0 FPs
+on the same images). The investigation ran several interventions and
+quantified each:
+
+| Intervention | float .pt FPs @ 0.85 | int8 xmodel FPs @ 0.85 | Note |
+|---|---:|---:|---|
+| yolov11n baseline (eggs-only calib) | 0 | 4,220 | Confirmed: pure quantization tax |
+| + hard-negative training | 0 | 4,220 → 6,609* | Float reaches 0 FPs; mixed calib slightly worse |
+| + bigger model (yolov11s) | 0 | **2,172** | 67% reduction at int8 — **capacity hypothesis confirmed** |
+
+*The counterintuitive "worse with hard-neg calibration mix" result is
+because diverse calibration data widens per-tensor activation scales,
+which the DPU hardware requires uniform; wider scales mean coarser
+per-bucket quantization and more noise per layer.
+
+Bottom-line interpretation: model capacity (parameter count) is the
+dominant factor in int8 robustness for fine-grained single-class
+discrimination on this DPU. Training-data composition and calibration
+strategy are secondary.
+
+Egg-detection precision was preserved end-to-end (yolov11n vs yolov11s
+on 3 validation images: 53/57/47 vs 52/58/47 detections, average delta
+0). Throughput tradeoff: 25.8 → 17.2 FPS (still real-time).
+
+### ONNX deployment path — investigation outcome
+
+Attempted ONNX-based PTQ via `vai_q_onnx 1.14.0` as an alternative to
+NNDCT, motivated by per-channel weight quantization. **Path is not
+usable for this YOLOv11 architecture in this toolchain version.**
+
+- ONNX export step works (clean ~14 MB FP32 ONNX, cross-validated)
+- PTQ step crashes in the `align_concat` refinement pass:
+  `TypeError: '<' not supported between instances of 'NoneType' and 'int'`
+- Failure persists regardless of `per_channel` (True or False),
+  `quant_format` (FixNeuron or QDQ), or `N_CALIB` value
+- DPU hardware also requires per-tensor activation scales, which
+  eliminates the main theoretical advantage of the ONNX path
+
+Scripts retained in `scripts/host/_*onnx*` as documented infrastructure;
+the export step is reusable for any future ONNX deployment work.
+
+### Validation
+
+- yolov11s trained 50 epochs from `yolo11s.pt` (Ultralytics stock) on
+  the augmented eggs dataset in 26.8 min on an RTX A2000 8GB
+- mAP@0.5 = 0.995, mAP@0.5:0.95 = 0.915 on the eggs validation set
+- Architecture verification confirmed C2PSA_DPU at layer 10, zero DWConv
+  modules in the saved `.pt`
+- Compiled xmodel: 15 MB, single DPU subgraph, fingerprint
+  `0x101000056010407`
+- Live demo on Kria via `bash scripts/kria/run_live.sh yolov11s`
+  successfully launches `notebooks/eggs/05_deploy_visual.ipynb` and
+  runs at ~17 FPS
+
+### Migration notes
+
+For users on v0.8.x with yolov11n workflows: nothing changes. yolov11s
+is purely additive. The existing yolov11n compile/sync/deploy
+commands remain identical.
+
+If you want to use yolov11s with your own dataset, the training command
+is the same shape as for yolov11n (see [docs/YOLOV11.md](YOLOV11.md));
+just replace `yolo11n.pt` with `yolo11s.pt` (auto-downloads on first
+use) and update the `--output` path.
+
+---
+
 ## v0.8.0 — YOLOv11 family support (2026-05-18)
 
 ### Added

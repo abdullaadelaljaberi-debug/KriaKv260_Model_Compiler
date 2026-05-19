@@ -6,6 +6,13 @@ labelled **(on laptop)** or **(on Kria)** to make the workflow unambiguous.
 
 Target: Kria-PYNQ 3.0.1, Vitis AI 3.5, DPUCZDX8G ISA1 B4096 @ 300 MHz.
 
+> **Looking for the automated workflow?** This doc covers the *generic
+> vendor-tool* path: pulling AMD's Docker images, running quantization
+> by hand, scp'ing xmodels. For the repo's automated workflow with
+> training/compile/sync helper scripts and validated YOLOv5 + YOLOv11
+> support, start with [KRIA_SETUP.md](./KRIA_SETUP.md) and
+> [USAGE.md](./USAGE.md) instead.
+
 ---
 
 ## 0. Prerequisites
@@ -237,7 +244,10 @@ visible error.
 
 - For an end-to-end benchmark suite over multiple models (latency, power,
   accuracy, mAP), see `notebooks/04_vai35_benchmark.ipynb`.
-- For live camera inference, see `notebooks/07_kv260_live_inference_v2.ipynb`.
+- For live camera inference using this repo's automated pipeline, see
+  `notebooks/02_deploy_text.ipynb` (YOLOv5, text-mode max throughput),
+  `notebooks/03_deploy_visual.ipynb` (YOLOv5, visual mode with sliders),
+  or `notebooks/eggs/05_deploy_visual.ipynb` (YOLOv11, eggs demo).
 - For the model zoo's pre-compiled xmodels (skip step 4 entirely), see
   AMD's Vitis AI Model Zoo at github.com/Xilinx/Vitis-AI/tree/master/model_zoo.
 
