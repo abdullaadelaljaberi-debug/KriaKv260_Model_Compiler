@@ -6,8 +6,8 @@ deploy path read from this registry, so changes in one place propagate
 correctly.
 
 A "family" is a model architecture (yolov5, yolox, yolov7, yolov4_csp,
-ssd_mobilenetv2). A "variant" is a specific model within a family
-(yolov5n, yolov5s, yolox_tiny, etc.).
+ssd_mobilenetv2, ssdlite, retinanet, classification). A "variant" is a
+specific model within a family (yolov5n, yolov5s, yolox_tiny, etc.).
 
 Status per family:
     yolov5         — full pipeline support
@@ -18,6 +18,12 @@ Status per family:
     yolov7         — stub (deploy-side decoder TBD; compile raises)
     yolov4_csp     — stub
     ssd_mobilenetv2 — stub
+    ssdlite        — v0.12 (full compile path; variants stub until trained)
+    retinanet      — v0.12 (full compile path; variants stub until trained)
+    classification — v0.12 (full compile path; variants stub until trained;
+                     sub-architecture (resnet50/mobilenetv2/inceptionv3) is
+                     decoded from the variant name prefix — see
+                     classification_subarch() below)
 """
 from __future__ import annotations
 
@@ -25,7 +31,10 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 
-Family = Literal["yolov5", "yolov11", "yolox", "yolov7", "yolov4_csp", "ssd_mobilenetv2"]
+Family = Literal[
+    "yolov5", "yolov11", "yolox", "yolov7", "yolov4_csp", "ssd_mobilenetv2",
+    "ssdlite", "retinanet", "classification",
+]
 Status = Literal["full", "stub"]
 
 
@@ -158,6 +167,176 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
         notes="VAI 3.5 zoo entry: tf_ssdmobilenetv2_coco_300_300_3.5. "
               "Different toolchain (vai_q_tensorflow2). Stub.",
     ),
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # v0.12 multi-model multi-dataset pipeline
+    #
+    # Status note: all v0.12 variants are marked "stub" until training has
+    # actually been run. Flip to "full" per-variant after `train_all.sh`
+    # completes and the xmodel has been verified on the Kria.
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # ── YOLOv5n on v0.12 datasets ───────────────────────────────────────────
+    "yolov5n_bstld": ModelSpec(
+        name="yolov5n_bstld", family="yolov5",
+        imgsz=640, nc=4, reg_max=16, status="stub",
+        notes="v0.12 — YOLOv5n on Bosch Small Traffic Lights (4 classes: "
+              "red, yellow, green, off). Baseline against Amin & Hasan 2024 "
+              "IEEE Access (YOLOv3-Tiny BSTLD on KV260: 15 FPS, 3.5 W, 99%).",
+    ),
+    "yolov5n_license_plates": ModelSpec(
+        name="yolov5n_license_plates", family="yolov5",
+        imgsz=640, nc=1, reg_max=16, status="stub",
+        notes="v0.12 — YOLOv5n on Roboflow LPR (license-plate region "
+              "detection, no OCR). Successor to yolov5n_lpr; same model, "
+              "new larger Roboflow dataset.",
+    ),
+    "yolov5n_vineset": ModelSpec(
+        name="yolov5n_vineset", family="yolov5",
+        imgsz=640, nc=2, reg_max=16, status="stub",
+        notes="v0.12 — YOLOv5n on VineSet (Magalhães Zenodo 5717293; grape "
+              "bunches + trunks). Baseline against Magalhães 2022 EAAI "
+              "RetinaNet-ResNet50 (KV260 14-25 FPS, ~5 W).",
+    ),
+
+    # ── YOLOv5s on v0.12 datasets ───────────────────────────────────────────
+    "yolov5s_bstld": ModelSpec(
+        name="yolov5s_bstld", family="yolov5",
+        imgsz=640, nc=4, reg_max=16, status="stub",
+        notes="v0.12 — YOLOv5s on BSTLD. Larger capacity than yolov5n; tests "
+              "whether bigger non-attention model closes gap with YOLOv11n.",
+    ),
+    "yolov5s_license_plates": ModelSpec(
+        name="yolov5s_license_plates", family="yolov5",
+        imgsz=640, nc=1, reg_max=16, status="stub",
+        notes="v0.12 — YOLOv5s on Roboflow LPR.",
+    ),
+    "yolov5s_vineset": ModelSpec(
+        name="yolov5s_vineset", family="yolov5",
+        imgsz=640, nc=2, reg_max=16, status="stub",
+        notes="v0.12 — YOLOv5s on VineSet.",
+    ),
+
+    # ── YOLOv11n on v0.12 datasets ──────────────────────────────────────────
+    # Same DPU-friendly architecture surgery as yolov11n: C2PSA → C2PSA_DPU
+    # and DWConv → Conv applied at training time. See _train_yolov11.py.
+    "yolov11n_bstld": ModelSpec(
+        name="yolov11n_bstld", family="yolov11",
+        imgsz=640, nc=4, reg_max=16, status="stub",
+        notes="v0.12 — YOLOv11n on BSTLD. Attention-based architecture "
+              "(C2PSA_DPU gated conv) on 4-class traffic-light detection.",
+    ),
+    "yolov11n_license_plates": ModelSpec(
+        name="yolov11n_license_plates", family="yolov11",
+        imgsz=640, nc=1, reg_max=16, status="stub",
+        notes="v0.12 — YOLOv11n on Roboflow LPR.",
+    ),
+    "yolov11n_vineset": ModelSpec(
+        name="yolov11n_vineset", family="yolov11",
+        imgsz=640, nc=2, reg_max=16, status="stub",
+        notes="v0.12 — YOLOv11n on VineSet. Direct comparison against "
+              "Magalhães RetinaNet baseline on same dataset.",
+    ),
+
+    # ── YOLOv11s on v0.12 datasets ──────────────────────────────────────────
+    "yolov11s_bstld": ModelSpec(
+        name="yolov11s_bstld", family="yolov11",
+        imgsz=640, nc=4, reg_max=16, status="stub",
+        notes="v0.12 — YOLOv11s on BSTLD. Higher-capacity attention model; "
+              "tests whether bigger gated-attention recovers more int8 "
+              "robustness than larger non-attention (yolov5s).",
+    ),
+    "yolov11s_license_plates": ModelSpec(
+        name="yolov11s_license_plates", family="yolov11",
+        imgsz=640, nc=1, reg_max=16, status="stub",
+        notes="v0.12 — YOLOv11s on Roboflow LPR.",
+    ),
+    "yolov11s_vineset": ModelSpec(
+        name="yolov11s_vineset", family="yolov11",
+        imgsz=640, nc=2, reg_max=16, status="stub",
+        notes="v0.12 — YOLOv11s on VineSet.",
+    ),
+
+    # ── SSDLite-MobileNetV3-Large (new family: ssdlite) ─────────────────────
+    # Anchor-based single-stage detector via torchvision.models.detection.
+    # HardSwish backbone activations are swapped to HardSigmoid*x at compile
+    # time for DPU compatibility (see lpr_pipeline/compile/ssd_mobilenet.py).
+    "ssdlite_bstld": ModelSpec(
+        name="ssdlite_bstld", family="ssdlite",
+        imgsz=320, nc=4, reg_max=-1, status="stub",
+        notes="v0.12 — SSDLite-MobileNetV3-Large on BSTLD. Non-YOLO "
+              "single-stage detector for architectural philosophy "
+              "comparison in defence table.",
+    ),
+    "ssdlite_license_plates": ModelSpec(
+        name="ssdlite_license_plates", family="ssdlite",
+        imgsz=320, nc=1, reg_max=-1, status="stub",
+        notes="v0.12 — SSDLite-MobileNetV3-Large on Roboflow LPR.",
+    ),
+    "ssdlite_vineset": ModelSpec(
+        name="ssdlite_vineset", family="ssdlite",
+        imgsz=320, nc=2, reg_max=-1, status="stub",
+        notes="v0.12 — SSDLite-MobileNetV3-Large on VineSet.",
+    ),
+
+    # ── RetinaNet-ResNet50-FPN (new family: retinanet) ──────────────────────
+    # Focal-loss single-stage detector via torchvision.models.detection.
+    # FPN's bilinear upsampling may produce multi-subgraph xmodel; deploy
+    # via vitis_ai_library.GraphRunner on Kria if so.
+    "retinanet_bstld": ModelSpec(
+        name="retinanet_bstld", family="retinanet",
+        imgsz=640, nc=4, reg_max=-1, status="stub",
+        notes="v0.12 — RetinaNet-ResNet50-FPN on BSTLD. Heaviest variant in "
+              "v0.12 (~37M params). May produce multi-subgraph xmodel.",
+    ),
+    "retinanet_license_plates": ModelSpec(
+        name="retinanet_license_plates", family="retinanet",
+        imgsz=640, nc=1, reg_max=-1, status="stub",
+        notes="v0.12 — RetinaNet-ResNet50-FPN on Roboflow LPR.",
+    ),
+    "retinanet_vineset": ModelSpec(
+        name="retinanet_vineset", family="retinanet",
+        imgsz=640, nc=2, reg_max=-1, status="stub",
+        notes="v0.12 — RetinaNet-ResNet50-FPN on VineSet. Closest "
+              "peer-reviewed reproduction (Magalhães 2022 EAAI used "
+              "RetinaNet on this exact dataset).",
+    ),
+
+    # ── Classification (new family: classification) ─────────────────────────
+    # Sub-architecture is decoded from the variant name prefix via
+    # classification_subarch(). See lpr_pipeline/compile/classification.py.
+    "resnet50_gtsrb": ModelSpec(
+        name="resnet50_gtsrb", family="classification",
+        imgsz=224, nc=43, reg_max=-1, status="stub",
+        notes="v0.12 — ResNet50 on GTSRB (43-class traffic-sign "
+              "classification). ImageNet-pretrained transfer learning.",
+    ),
+    "resnet50_oxford_pets": ModelSpec(
+        name="resnet50_oxford_pets", family="classification",
+        imgsz=224, nc=37, reg_max=-1, status="stub",
+        notes="v0.12 — ResNet50 on Oxford-IIIT Pets (37 cat+dog breeds). "
+              "Fine-grained breed classification.",
+    ),
+    "mobilenetv2_gtsrb": ModelSpec(
+        name="mobilenetv2_gtsrb", family="classification",
+        imgsz=224, nc=43, reg_max=-1, status="stub",
+        notes="v0.12 — MobileNetV2 on GTSRB. Efficiency baseline.",
+    ),
+    "mobilenetv2_oxford_pets": ModelSpec(
+        name="mobilenetv2_oxford_pets", family="classification",
+        imgsz=224, nc=37, reg_max=-1, status="stub",
+        notes="v0.12 — MobileNetV2 on Oxford-IIIT Pets.",
+    ),
+    "inceptionv3_gtsrb": ModelSpec(
+        name="inceptionv3_gtsrb", family="classification",
+        imgsz=299, nc=43, reg_max=-1, status="stub",
+        notes="v0.12 — InceptionV3 on GTSRB. Note: 299x299 input (not 224).",
+    ),
+    "inceptionv3_oxford_pets": ModelSpec(
+        name="inceptionv3_oxford_pets", family="classification",
+        imgsz=299, nc=37, reg_max=-1, status="stub",
+        notes="v0.12 — InceptionV3 on Oxford-IIIT Pets.",
+    ),
 }
 
 
@@ -187,3 +366,37 @@ def list_supported_families() -> dict[Family, list[str]]:
 def list_full_support() -> list[str]:
     """Return only variants whose status is ``"full"`` (i.e. usable today)."""
     return [name for name, spec in MODEL_REGISTRY.items() if spec.status == "full"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Classification sub-architecture dispatch
+#
+# The "classification" family covers three different torchvision models
+# (ResNet50, MobileNetV2, InceptionV3). The compile path needs to know which
+# factory to call; the sub-arch is encoded in the variant name prefix.
+# ─────────────────────────────────────────────────────────────────────────────
+CLASSIFICATION_SUBARCHS = ("resnet50", "mobilenetv2", "inceptionv3")
+
+
+def classification_subarch(variant_name: str) -> str:
+    """Return the torchvision sub-architecture name from a classification variant.
+
+    Example::
+
+        classification_subarch("resnet50_oxford_pets")     # → "resnet50"
+        classification_subarch("mobilenetv2_gtsrb")        # → "mobilenetv2"
+        classification_subarch("inceptionv3_oxford_pets")  # → "inceptionv3"
+
+    Raises
+    ------
+    ValueError
+        If ``variant_name`` does not begin with one of the known sub-arch
+        prefixes followed by an underscore.
+    """
+    for arch in CLASSIFICATION_SUBARCHS:
+        if variant_name.startswith(arch + "_"):
+            return arch
+    raise ValueError(
+        f"Variant {variant_name!r} does not begin with a known classification "
+        f"sub-architecture prefix (one of: {CLASSIFICATION_SUBARCHS})"
+    )

@@ -1,29 +1,32 @@
 """
-Compile path for classification networks: ResNet50, MobileNetV2, InceptionV3.
+Compile path for SSDLite-MobileNetV3-Large detection on the Kria KV260.
 
-These three architectures compile cleanly to a single DPU subgraph because:
-- ResNet50: standard Conv + BN + ReLU + AdaptiveAvgPool + Linear. All DPU-native.
-- MobileNetV2: Conv + DWConv + ReLU6. DWConv is supported on the DPU's ALU engine.
-- InceptionV3: Conv + BN + ReLU + AvgPool + Linear. All DPU-native.
+SSDLite is a depthwise-separable variant of SSD using a MobileNetV3-Large
+backbone. The architecture maps cleanly to DPU primitives:
+- Backbone: Conv + BN + HardSwish/ReLU + DWConv (ALU engine)
+- SSDLite head: DWConv + 1x1 Conv per feature scale
+- Anchor decoding: CPU-side post-processing (no in-graph anchor math)
 
-No SiLU/Swish, no softmax-attention, no architectural surgery needed.
+Note on HardSwish: SSDLite-MobileNetV3 uses HardSwish in the backbone, which
+is NOT in the DPU's native ISA. We replace it with HardSigmoid * x at trace
+time. This produces a similar curve and is DPU-native. The replacement adds
+no parameters; the accuracy hit recovers in fine-tune.
 
-The compile flow is:
-    1. Load the trained PyTorch model from .pth
-    2. Trace through NNDCT with the calibration set
-    3. Quantize per-tensor int8, per-channel weights
-    4. Compile with vai_c_xir to a KV260-targeted xmodel
-    5. Verify exactly 1 DPU subgraph
+Compile flow:
+    1. Load the trained .pth (saved by train_detection.py with model_name='ssdlite')
+    2. Rebuild SSDLite-MobileNetV3 architecture, replace classification head
+       for our num_classes
+    3. Swap HardSwish -> HardSigmoid*x in the backbone
+    4. NNDCT calibrate on GPU with in-domain images
+    5. vai_c_xir compile to KV260 xmodel
+    6. Verify single-subgraph output
 
-Calibration data is expected at:
-    data/calib/classification/<dataset>/   (built by prep_calibration.py)
-
-Usage (called by 02_compile.sh):
-    python3 -m lpr_pipeline.compile.classification \\
-        --model resnet50 --variant resnet50_oxford_pets \\
-        --weights data/weights/classification/resnet50_oxford_pets.pth \\
-        --calib data/calib/classification/oxford_pets/ \\
-        --output out/resnet50_oxford_pets/
+Usage:
+    python3 -m lpr_pipeline.compile.ssd_mobilenet \\
+        --variant ssdlite_bstld \\
+        --weights data/weights/detection/ssdlite_bstld.pth \\
+        --calib data/calib/detection/bstld/ \\
+        --output out/ssdlite_bstld/
 """
 
 from __future__ import annotations
@@ -47,57 +50,72 @@ def log_err(msg: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Model factory
+# Model factory and DPU-friendly substitutions
 # ---------------------------------------------------------------------------
 
-def build_classification_model(model_name: str, num_classes: int, imgsz: int):
-    """Construct the classification model architecture, ready to load weights."""
-    import torch.nn as nn  # type: ignore
-    from torchvision.models import (
-        resnet50, mobilenet_v2, inception_v3,
-        ResNet50_Weights, MobileNet_V2_Weights, Inception_V3_Weights,
-    )  # type: ignore
+def swap_hardswish_to_dpu_friendly(model) -> None:
+    """Replace nn.Hardswish in the model with HardSigmoid*x in-place.
 
-    if model_name == "resnet50":
-        model = resnet50(weights=None)
-        model.fc = nn.Linear(model.fc.in_features, num_classes)
-    elif model_name == "mobilenetv2":
-        model = mobilenet_v2(weights=None)
-        model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
-    elif model_name == "inceptionv3":
-        # Important: aux_logits=False for inference/quantization. The aux head is
-        # only used during training to combat vanishing gradients; at deploy time
-        # we strip it. NNDCT can't trace a model that has dual outputs anyway.
-        model = inception_v3(weights=None, aux_logits=False, init_weights=False)
-        model.fc = nn.Linear(model.fc.in_features, num_classes)
-    else:
-        raise ValueError(f"unknown classification model: {model_name}")
+    The DPU has HardSigmoid as a native operator but not HardSwish.
+    Mathematically, HardSwish(x) = x * HardSigmoid(x), which IS DPU-compatible.
+    This function walks the module tree and substitutes.
+    """
+    import torch.nn as nn  # type: ignore
+
+    class HardSwishDpu(nn.Module):
+        """HardSwish reformulated as x * HardSigmoid(x) — DPU-compatible."""
+        def __init__(self):
+            super().__init__()
+            self.hardsigmoid = nn.Hardsigmoid()
+        def forward(self, x):
+            return x * self.hardsigmoid(x)
+
+    for name, child in model.named_children():
+        if isinstance(child, nn.Hardswish):
+            setattr(model, name, HardSwishDpu())
+        else:
+            swap_hardswish_to_dpu_friendly(child)
+
+
+def build_ssdlite_model(num_classes: int):
+    """Construct SSDLite-MobileNetV3-Large with replaced classification head."""
+    from torchvision.models.detection import ssdlite320_mobilenet_v3_large  # type: ignore
+    from torchvision.models.detection.ssdlite import SSDLiteClassificationHead  # type: ignore
+    from functools import partial
+    import torch.nn as nn  # type: ignore
+
+    # No pretrained weights needed — we load the trained checkpoint below
+    model = ssdlite320_mobilenet_v3_large(weights=None, weights_backbone=None)
+
+    # Replace classification head for the target num_classes
+    in_channels = [m.in_channels for m in model.head.classification_head.module_list]
+    num_anchors = model.anchor_generator.num_anchors_per_location()
+    norm_layer = partial(nn.BatchNorm2d, eps=0.001, momentum=0.03)
+    # +1 because torchvision detection models count background as class 0
+    model.head.classification_head = SSDLiteClassificationHead(
+        in_channels, num_anchors, num_classes + 1, norm_layer)
 
     return model
 
 
-def get_input_shape(model_name: str) -> Tuple[int, int, int, int]:
-    """Return (batch, channel, height, width) for NNDCT trace."""
-    if model_name == "inceptionv3":
-        return (1, 3, 299, 299)
-    else:
-        return (1, 3, 224, 224)
+def get_input_shape() -> Tuple[int, int, int, int]:
+    """SSDLite-MobileNetV3-Large standard input shape."""
+    return (1, 3, 320, 320)
 
 
 # ---------------------------------------------------------------------------
 # Compile flow
 # ---------------------------------------------------------------------------
 
-def compile_classification(
-    model_name: str,
+def compile_ssdlite(
     variant: str,
     weights_path: Path,
     calib_dir: Path,
     output_dir: Path,
     num_calib_images: int = 200,
 ) -> int:
-    """Run the full compile pipeline for one classification variant."""
-    log_step(f"Compiling {variant} ({model_name})")
+    """Run the full compile pipeline for one SSDLite variant."""
+    log_step(f"Compiling {variant} (SSDLite-MobileNetV3-Large)")
 
     try:
         import torch  # type: ignore
@@ -117,49 +135,69 @@ def compile_classification(
     # ---- Load checkpoint ----
     log_info(f"loading checkpoint: {weights_path}")
     ckpt = torch.load(weights_path, map_location="cpu", weights_only=False)
-    if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
-        state_dict = ckpt["model_state_dict"]
-        num_classes = ckpt.get("num_classes")
-        imgsz = ckpt.get("imgsz")
-        log_info(f"  num_classes={num_classes}, imgsz={imgsz}, "
-                 f"trained for {ckpt.get('epoch', '?')} epochs, "
-                 f"val_acc={ckpt.get('val_acc', '?'):.4f}")
-    else:
-        state_dict = ckpt
-        num_classes = None
-        imgsz = None
-
-    if num_classes is None:
-        log_err("checkpoint missing num_classes; pass via --num-classes flag")
+    if not isinstance(ckpt, dict) or "model_state_dict" not in ckpt:
+        log_err("checkpoint format unexpected: missing 'model_state_dict' key")
         return 1
 
-    if imgsz is None:
-        imgsz = 299 if model_name == "inceptionv3" else 224
+    state_dict = ckpt["model_state_dict"]
+    num_classes = ckpt.get("num_classes")
+    if num_classes is None:
+        log_err("checkpoint missing num_classes")
+        return 1
+    # train_detection.py stores num_classes already +1 for background, so subtract back
+    user_num_classes = num_classes - 1
+    log_info(f"  num_classes (excluding background): {user_num_classes}")
+    log_info(f"  trained dataset: {ckpt.get('dataset', '?')}")
+    log_info(f"  trained for {ckpt.get('epoch', '?')} epochs, "
+             f"loss={ckpt.get('loss', '?')}")
 
     # ---- Build model with float weights ----
-    model = build_classification_model(model_name, num_classes, imgsz)
+    model = build_ssdlite_model(user_num_classes)
     model.load_state_dict(state_dict, strict=False)
     model.eval()
     log_info("float model built and weights loaded")
 
+    # ---- Swap HardSwish -> DPU-friendly form ----
+    log_info("swapping HardSwish -> HardSigmoid*x for DPU compatibility")
+    swap_hardswish_to_dpu_friendly(model)
+
+    # ---- Determine calibration device ----
+    calib_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    log_info(f"calibration device: {calib_device}")
+
     # ---- Calibration ----
     log_info(f"running calibration pass with images from {calib_dir}")
-    input_shape = get_input_shape(model_name)
+    input_shape = get_input_shape()
     dummy_input = torch.zeros(input_shape, dtype=torch.float32)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     quant_dir = output_dir / "quantized"
     quant_dir.mkdir(parents=True, exist_ok=True)
 
-    # Calibration runs on GPU if available (4× faster on the user's RTX A2000)
-    # If NNDCT throws a CUDA error on the calibration pass, fall back to CPU.
-    calib_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    log_info(f"calibration device: {calib_device}")
+    # NNDCT calibration pass.
+    # Note: torchvision detection models accept a list of tensors in training mode
+    # and a list in eval mode. For NNDCT trace we need a single-tensor entry point,
+    # which is why we wrap the model:
+    class SSDForwardWrapper(torch.nn.Module):
+        def __init__(self, ssd_model):
+            super().__init__()
+            self.ssd = ssd_model
+            self.ssd.eval()
 
-    # NNDCT calibration pass
+        def forward(self, x):
+            # The SSDLite model in eval mode normally returns post-processed
+            # detection results. For quantization we want the raw conv outputs.
+            # Walk through the backbone -> head manually:
+            features = self.ssd.backbone(x)
+            head_outputs = self.ssd.head(list(features.values()))
+            # head returns {'bbox_regression': ..., 'cls_logits': ...}
+            return head_outputs['bbox_regression'], head_outputs['cls_logits']
+
+    model_wrapped = SSDForwardWrapper(model)
+
     quantizer = torch_quantizer(
         quant_mode="calib",
-        module=model,
+        module=model_wrapped,
         input_args=(dummy_input.to(calib_device),),
         output_dir=str(quant_dir),
         bitwidth=8,
@@ -169,29 +207,16 @@ def compile_classification(
     quant_model.to(calib_device)
 
     # Build calibration data loader
+    imgsz = input_shape[2]
     tf = transforms.Compose([
         transforms.Resize((imgsz, imgsz)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225]),
     ])
     calib_images = sorted(
         list(calib_dir.glob("*.jpg")) +
         list(calib_dir.glob("*.png")) +
-        list(calib_dir.glob("*.ppm"))
+        list(calib_dir.glob("*.jpeg"))
     )[:num_calib_images]
-    if not calib_images:
-        # Walk one level into subdirectories (ImageFolder layout)
-        calib_images = []
-        for sub in calib_dir.iterdir():
-            if sub.is_dir():
-                calib_images.extend(list(sub.glob("*.jpg")) +
-                                    list(sub.glob("*.png")) +
-                                    list(sub.glob("*.ppm")))
-            if len(calib_images) >= num_calib_images:
-                break
-        calib_images = calib_images[:num_calib_images]
-
     if not calib_images:
         log_err(f"no calibration images found under {calib_dir}")
         return 1
@@ -213,7 +238,7 @@ def compile_classification(
     log_info("running test pass to export quantized xmodel...")
     quantizer = torch_quantizer(
         quant_mode="test",
-        module=model,
+        module=model_wrapped,
         input_args=(dummy_input.to(calib_device),),
         output_dir=str(quant_dir),
         bitwidth=8,
@@ -229,14 +254,11 @@ def compile_classification(
 
     # ---- vai_c_xir compile to KV260 target ----
     import subprocess
-    xmodel_in = quant_dir / f"{type(model).__name__}_int.xmodel"
-    if not xmodel_in.exists():
-        # NNDCT names the file based on the model class
-        candidates = list(quant_dir.glob("*_int.xmodel"))
-        if not candidates:
-            log_err(f"no _int.xmodel produced in {quant_dir}")
-            return 1
-        xmodel_in = candidates[0]
+    xmodel_candidates = list(quant_dir.glob("*_int.xmodel"))
+    if not xmodel_candidates:
+        log_err(f"no _int.xmodel produced in {quant_dir}")
+        return 1
+    xmodel_in = xmodel_candidates[0]
     log_info(f"input xmodel: {xmodel_in}")
 
     arch_json = Path("/opt/vitis_ai/compiler/arch/DPUCZDX8G/KV260/arch.json")
@@ -256,13 +278,13 @@ def compile_classification(
     log_info(f"running: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        log_err(f"vai_c_xir failed:")
+        log_err("vai_c_xir failed:")
         log_err(result.stdout)
         log_err(result.stderr)
         return 1
     log_info("vai_c_xir compile successful")
 
-    # vai_c_xir produces <net_name>.xmodel — rename to _kv260.xmodel for clarity
+    # Rename for clarity
     raw_out = output_dir / f"{variant}.xmodel"
     if raw_out.exists() and not final_xmodel.exists():
         raw_out.rename(final_xmodel)
@@ -280,6 +302,7 @@ def compile_classification(
         if len(dpu_subs) != 1:
             log_err(f"WARNING: expected 1 DPU subgraph, found {len(dpu_subs)}")
             log_err("this xmodel will NOT load via pynq_dpu.DpuOverlay.load_model")
+            log_err("use vitis_ai_library.GraphRunner instead on the Kria side")
             return 2
     except ImportError:
         log_info("  (xir not available for verification; skipping)")
@@ -292,20 +315,17 @@ def compile_classification(
 # BaseCompiler adapter — plugs into lpr_pipeline.compile.registry
 # ---------------------------------------------------------------------------
 class Compiler(BaseCompiler):
-    """Thin adapter so the registry can dispatch ``classification`` cleanly.
+    """Thin adapter so the registry can dispatch ``ssdlite`` cleanly.
 
-    The standalone ``compile_classification()`` function above and its
-    ``main()`` CLI remain usable for direct invocation. This class is what
-    ``02_compile.sh`` drives via ``get_compiler("classification")``.
+    The standalone ``compile_ssdlite()`` function above and its ``main()``
+    CLI remain usable for direct invocation. This class is what
+    ``02_compile.sh`` drives via ``get_compiler("ssdlite")``.
     """
-    family = "classification"
+    family = "ssdlite"
 
     def _compile_family(self, inputs: CompileInputs) -> Path:
-        from lpr_pipeline.shared.models import classification_subarch
-        model_name = classification_subarch(inputs.spec.name)
         output_dir = inputs.out_xmodel.parent
-        rc = compile_classification(
-            model_name=model_name,
+        rc = compile_ssdlite(
             variant=inputs.spec.name,
             weights_path=inputs.weights,
             calib_dir=inputs.calib_dir,
@@ -314,8 +334,8 @@ class Compiler(BaseCompiler):
         )
         if rc != 0:
             raise CompileError(
-                f"classification compile failed for {inputs.spec.name} "
-                f"(compile_classification returned {rc})"
+                f"ssdlite compile failed for {inputs.spec.name} "
+                f"(compile_ssdlite returned {rc})"
             )
         if not inputs.out_xmodel.is_file():
             raise CompileError(
@@ -331,10 +351,8 @@ class Compiler(BaseCompiler):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--model", required=True,
-                    choices=["resnet50", "mobilenetv2", "inceptionv3"])
     ap.add_argument("--variant", required=True,
-                    help="name for this compiled variant, e.g. resnet50_oxford_pets")
+                    help="name for this compiled variant, e.g. ssdlite_bstld")
     ap.add_argument("--weights", type=Path, required=True,
                     help="path to trained .pth file")
     ap.add_argument("--calib", type=Path, required=True,
@@ -344,8 +362,8 @@ def main() -> int:
     ap.add_argument("--num-calib-images", type=int, default=200)
     args = ap.parse_args()
 
-    return compile_classification(
-        args.model, args.variant, args.weights, args.calib, args.output,
+    return compile_ssdlite(
+        args.variant, args.weights, args.calib, args.output,
         args.num_calib_images,
     )
 

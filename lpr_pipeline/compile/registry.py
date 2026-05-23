@@ -18,6 +18,10 @@ _FAMILY_TO_MODULE = {
     "yolov7":           "lpr_pipeline.compile.yolov7",
     "yolov4_csp":       "lpr_pipeline.compile.yolov4_csp",
     "ssd_mobilenetv2":  "lpr_pipeline.compile.ssd_mobilenetv2",
+    # v0.12 — multi-arch, multi-dataset benchmark:
+    "ssdlite":          "lpr_pipeline.compile.ssd_mobilenet",
+    "retinanet":        "lpr_pipeline.compile.retinanet",
+    "classification":   "lpr_pipeline.compile.classification",
 }
 
 

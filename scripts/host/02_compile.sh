@@ -33,8 +33,11 @@ usage() {
 Usage: $(basename "$0") <family> <variant> <weights> <calib_dir> [output]
 
 Arguments:
-  family       One of: yolov5, yolox, yolov7, yolov4_csp, ssd_mobilenetv2
-  variant      e.g. yolov5n, yolov5s, yolox_tiny, yolox_nano
+  family       One of: yolov5, yolov11, yolox,
+                       ssdlite, retinanet, classification
+                       (stubs: yolov7, yolov4_csp, ssd_mobilenetv2)
+  variant      e.g. yolov5n, yolov11n, yolox_tiny,
+                       ssdlite_bstld, retinanet_vineset, resnet50_gtsrb
   weights      Path to your trained .pt checkpoint (relative to repo root)
   calib_dir    Directory of calibration images (≥100 JPGs/PNGs)
   output       Optional. Where to write the final .xmodel.
